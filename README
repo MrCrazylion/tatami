@@ -12,16 +12,21 @@ has an apt-style command line and uses libsolv to resolve dependencies.
 
 Building and installing
 -----------------------
-Needs a C++11 compiler, libarchive and libsolv (pkg-config files for both).
+Needs a C++11 compiler, libarchive (with pkg-config), cmake, a C compiler and
+the zlib headers. libsolv is not taken from the system: it is vendored as a git
+submodule in deps/libsolv and built as a minimal static library (no repository
+format parsers), so the result does not depend on what a distribution
+packages. After a fresh clone fetch it once:
+
+$ git submodule update --init
 
 $ make
 $ make install                      # or: make DESTDIR=/some/other/path install
 $ make PKG_EXT=tar.pkg              # change the default package extension
-$ make STATIC=yes                   # static binary
+$ make STATIC=yes                   # fully static binary
 $ make check                        # end-to-end tests (needs root)
-
-If libsolv lives in a private prefix:
-$ export PKG_CONFIG_PATH=/prefix/lib64/pkgconfig LD_LIBRARY_PATH=/prefix/lib64
+$ make clean                        # keeps the built libsolv
+$ make distclean                    # also removes deps/libsolv/build
 
 
 Command line

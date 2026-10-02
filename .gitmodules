@@ -1,3 +1,4 @@
 [submodule "deps/libsolv"]
 	path = deps/libsolv
 	url = https://github.com/openSUSE/libsolv.git
+	ignore = untracked
