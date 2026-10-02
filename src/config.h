@@ -7,9 +7,11 @@
 using namespace std;
 
 // Built-in defaults. The package extension can be changed at compile time
-// (make PKG_EXT=tar.pkg) and again at run time through PKG_EXT in tatami.conf.
+// (make PKG_EXT=myext, which defines DEFAULT_PKG_EXT) and again at run time
+// through PKG_EXT in tatami.conf. Every place that checks or strips the
+// extension uses config_t::pkg_ext, which starts out as this value.
 #ifndef DEFAULT_PKG_EXT
-#define DEFAULT_PKG_EXT         "pkg.tar.zst"
+#define DEFAULT_PKG_EXT         "tar.pkg"
 #endif
 #define DEFAULT_REPO_DIR        "/var/lib/tatami/packages"
 #define TATAMI_CONF             "/etc/tatami.conf"
@@ -27,7 +29,7 @@ struct rule_t {
 };
 
 struct config_t {
-	string pkg_ext;                 // without leading dot, e.g. "pkg.tar.zst"
+	string pkg_ext;                 // without leading dot, e.g. "tar.pkg"
 	vector<string> repo_dirs;       // directories scanned by 'tatami update'
 	string arch;                    // empty: use the machine architecture
 	string bulkhead;                // tatamk only: "yes" or "no" (build isolation)

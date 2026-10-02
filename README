@@ -22,7 +22,7 @@ $ git submodule update --init
 
 $ make
 $ make install                      # or: make DESTDIR=/some/other/path install
-$ make PKG_EXT=tar.pkg              # change the default package extension
+$ make PKG_EXT=myext                # build with your own package extension
 $ make STATIC=yes                   # fully static binary
 $ make check                        # end-to-end tests (needs root)
 $ make clean                        # keeps the built libsolv
@@ -60,8 +60,7 @@ A package is a tar archive (any compression libarchive reads: gz, bz2, xz,
 lzip, zstd). The file name is  <name>_<version>.<extension>  (split at the last '_', so
 names and versions may not contain '_'; hyphens are fine, e.g.
 libfoo-dev_2.0-1.tar.pkg) and the
-extension is chosen by the user: compile-time default (make PKG_EXT=...),
-overridden by PKG_EXT in /etc/tatami.conf. tatami and tatamk both use it,
+extension is chosen by the user (see "Custom package extension" below). tatami and tatamk both use it,
 so "tar.pkg", "pkg.tar.zst", "tatami" are all fine. Files that do not end in
 the configured extension are not indexed.
 
@@ -80,6 +79,28 @@ The archive contains the files of the package and a metadata member named
 depends/conflicts use libsolv relations: name, "name >= version" (also <, <=,
 =, >), and "a | b" alternatives. "replaces" removes the named package when
 this one is installed.
+
+
+Custom package extension
+------------------------
+Anyone building their own distribution can bake in their own package
+extension, no source changes needed:
+
+$ make PKG_EXT=myext
+
+The one variable is used everywhere: tatami is compiled with
+-DDEFAULT_PKG_EXT="myext" (it is what 'update' indexes and what a file argument
+is recognised by) and tatamk is generated from tatamk.in with @DEFAULT_PKG_EXT@
+replaced by "myext" (it names the packages it builds that way). The default is
+tar.pkg. The value may contain letters, digits, '.', '_' and '-' and no leading dot.
+
+The built-in value can be overridden when running, in this order of precedence:
+  1. PKG_EXT in the environment (tatamk only)
+  2. PKG_EXT in /etc/tatami.conf (tatami and tatamk)
+  3. the build-time default
+Keep tatami and tatamk on the same extension: if you override it only for
+tatamk through the environment, set the same PKG_EXT in tatami.conf or tatami
+will not see the packages.
 
 
 Recipes (Tatamifile)

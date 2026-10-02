@@ -27,7 +27,8 @@
 #
 
 TATAMI_CONF="/etc/tatami.conf"
-PKG_EXT="#PKG_EXT#"
+ENV_PKG_EXT="${PKG_EXT-}"      # run-time override from the environment
+PKG_EXT="@DEFAULT_PKG_EXT@"    # build-time default (make PKG_EXT=...)
 
 info() { echo "=======> $1"; }
 error() { echo "=======> ERROR: $1" >&2; }
@@ -44,6 +45,8 @@ print_help() {
 	echo "                        (alias --no-sandbox; or BULKHEAD=no in tatami.conf)"
 	echo "      --bulkhead        force the sandbox even if tatami.conf disables it"
 	echo "  -v, --version         print version and exit"
+	echo "package extension: default @DEFAULT_PKG_EXT@, overridden by PKG_EXT in the"
+	echo "configuration file, then by the PKG_EXT environment variable"
 	echo "  -h, --help            print help and exit"
 }
 
@@ -87,8 +90,10 @@ done
 
 [ -r "$RECIPE" ] || die "recipe '$RECIPE' not found"
 
+# Package extension: build-time default, then tatami.conf, then the environment
 v=$(conf_get PKG_EXT)
 [ -n "$v" ] && PKG_EXT="${v#.}"
+[ -n "$ENV_PKG_EXT" ] && PKG_EXT="${ENV_PKG_EXT#.}"
 COMPRESSION=$(conf_get PKG_COMPRESSION)
 if [ -z "$COMPRESSION" ]; then
 	case "$PKG_EXT" in

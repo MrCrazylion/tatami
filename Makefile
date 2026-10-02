@@ -11,9 +11,21 @@ VARDIR = /var/lib/tatami
 VERSION = 0.1.0
 NAME = tatami-$(VERSION)
 
-# Default package file extension, overridable at run time with PKG_EXT in
-# tatami.conf. Example: make PKG_EXT=tar.pkg
-PKG_EXT = pkg.tar.zst
+# The package file extension is a build-time default for both tools: tatami
+# gets it as -DDEFAULT_PKG_EXT, tatamk as the @DEFAULT_PKG_EXT@ substitution.
+# It can still be overridden when running: PKG_EXT in /etc/tatami.conf (both
+# tools) and, for tatamk only, the PKG_EXT environment variable.
+# Example for your own distribution:  make PKG_EXT=myext
+PKG_EXT ?= tar.pkg
+ifneq ($(shell printf '%s' '$(PKG_EXT)' | tr -d 'A-Za-z0-9._-'),)
+$(error PKG_EXT may only contain letters, digits, '.', '_' and '-')
+endif
+ifneq ($(filter .%,$(PKG_EXT)),)
+$(error PKG_EXT must not start with a dot)
+endif
+ifeq ($(strip $(PKG_EXT)),)
+$(error PKG_EXT must not be empty)
+endif
 
 PKG_CONFIG ?= pkg-config
 PKGS = libarchive
@@ -85,7 +97,7 @@ $(LIBSOLV_STAMP): $(LIBSOLV_A)
 	touch $@
 
 tatamk: tatamk.in .flags
-	sed -e "s/#VERSION#/$(VERSION)/" -e "s/#PKG_EXT#/$(PKG_EXT)/" $< > $@
+	sed -e "s/#VERSION#/$(VERSION)/" -e "s/@DEFAULT_PKG_EXT@/$(PKG_EXT)/" $< > $@
 	chmod +x $@
 
 # libsolv's headers must be staged before anything is compiled (order-only)

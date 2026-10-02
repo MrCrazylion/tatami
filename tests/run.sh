@@ -9,7 +9,7 @@ T="$PWD/tests/work"
 ROOT="$T/root"
 REPO="$T/repo"
 CONF="$T/tatami.conf"
-EXT="tar.pkg"          # a user-chosen, non-default package extension
+EXT="tpkg"             # a user-chosen extension, different from the build-time default
 
 pass=0; fail=0
 ok() { pass=$((pass+1)); echo "ok   - $1"; }
@@ -425,6 +425,23 @@ has "with the architecture message" "incompatible with this system"
 absent "foreign package not installed" usr/share/na/foreign
 check "noarch also installs from a file argument" 0 ty install "$REPO/na-any_1.0-1.$EXT"
 check "noarch installs when the host architecture is unknown to libsolv" 0 bash -c "echo 'ARCH = zz80' > '$T/zz.conf'; cat '$CONF' >> '$T/zz.conf'; '$TATAMI' -r '$ROOT' -c '$T/zz.conf' -s install na-noarch"
+
+echo "# package extension: build-time default, config, environment"
+DEFEXT=$(sed -n 's/^PKG_EXT="\([^"]*\)".*/\1/p' "$TATAMK" | head -1)
+[ -n "$DEFEXT" ] && [ "$DEFEXT" != "@DEFAULT_PKG_EXT@" ] && ok "tatamk carries the build-time default extension ($DEFEXT)" || bad "default extension not substituted in tatamk" "$DEFEXT"
+[ "$DEFEXT" != "$EXT" ] && ok "the suite's configured extension differs from the default" || bad "test extension equals the default"
+mkdir -p "$T/extrepo" "$T/recipes/ext1"
+printf 'name=ext1\nversion=1\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext1/Tatamifile"
+printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$T/extrepo" > "$T/noext.conf"
+check "tatamk without PKG_EXT in the config uses the build-time default" 0 "$TATAMK" -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+[ -f "$T/extrepo/ext1_1.$DEFEXT" ] && ok "package is named ext1_1.$DEFEXT" || bad "default-named package missing" "$(ls "$T/extrepo")"
+check "tatami without PKG_EXT in the config indexes the same extension" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" update
+has "tatami found the default-named package" "1 package"
+OUT=$(PKG_EXT=envext "$TATAMK" -c "$CONF" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo" 2>&1); [ -f "$T/extrepo/ext1_1.envext" ] && ok "PKG_EXT in the environment overrides the config (and the default)" || bad "environment override" "$OUT"
+OUT=$(PKG_EXT=.dotext "$TATAMK" -c "$CONF" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo" 2>&1); [ -f "$T/extrepo/ext1_1.dotext" ] && ok "a leading dot in the environment value is ignored" || bad "leading dot" "$OUT"
+check "an invalid extension in the environment is refused" 1 env 'PKG_EXT=a/b' "$TATAMK" -c "$CONF" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+check "the config beats the build-time default" 0 "$TATAMK" -c "$CONF" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+[ -f "$T/extrepo/ext1_1.$EXT" ] && ok "config extension $EXT used" || bad "config extension not used" "$(ls "$T/extrepo")"
 
 echo "# file names: <name>_<version>.<ext>"
 mkpkg libfoo-dev 2.0 "depends=libfoo >= 1.0" file=usr/include/foo.h
