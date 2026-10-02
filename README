@@ -1,0 +1,142 @@
+                tatami - package manager built on the pkgutils design
+
+
+Description
+-----------
+tatami keeps the architecture of pkgutils (CRUX): a small C++ core on top of
+libarchive, a plain-text package database with a crash-safe commit, regex
+UPGRADE/INSTALL rules and "rejected" files for locally modified configuration,
+and a bash tool (tatamk) that builds packages from recipes. On top of that it
+has an apt-style command line and uses libsolv to resolve dependencies.
+
+
+Building and installing
+-----------------------
+Needs a C++11 compiler, libarchive and libsolv (pkg-config files for both).
+
+$ make
+$ make install                      # or: make DESTDIR=/some/other/path install
+$ make PKG_EXT=tar.pkg              # change the default package extension
+$ make STATIC=yes                   # static binary
+$ make check                        # end-to-end tests (needs root)
+
+If libsolv lives in a private prefix:
+$ export PKG_CONFIG_PATH=/prefix/lib64/pkgconfig LD_LIBRARY_PATH=/prefix/lib64
+
+
+Command line
+------------
+tatami [options] <command> [arguments]
+
+  update                 build the package index from the configured repositories
+  install <pkg|file>...  install packages and their dependencies; installing
+                         an installed package upgrades it. "name=version"
+                         pins a version, a file argument installs that file
+  remove <package>...    remove packages and everything depending on them
+  upgrade                upgrade all installed packages
+  search <regex>         search names and descriptions
+  show <package>...      show package details
+  list [regex]           list packages (--installed, --upgradable, --available)
+  files <package|file>   list the files of a package
+  owns <regex>           find the package owning a file
+
+Options: -y (no questions), -s (simulate), -f (overwrite conflicting files),
+-r <root>, -c <config file>.
+
+Everything operates below the root given with -r, so a package set can be
+tried out in a scratch directory.
+
+
+Package format and extension
+----------------------------
+A package is a tar archive (any compression libarchive reads: gz, bz2, xz,
+lzip, zstd). The file name is  <name>_<version>.<extension>  (split at the last '_', so
+names and versions may not contain '_'; hyphens are fine, e.g.
+libfoo-dev_2.0-1.tar.pkg) and the
+extension is chosen by the user: compile-time default (make PKG_EXT=...),
+overridden by PKG_EXT in /etc/tatami.conf. tatami and tatamk both use it,
+so "tar.pkg", "pkg.tar.zst", "tatami" are all fine. Files that do not end in
+the configured extension are not indexed.
+
+The archive contains the files of the package and a metadata member named
+.META, which is not installed. It uses "key: value" lines:
+
+  name: example
+  version: 1.0-1
+  arch: x86_64               (noarch/all/any: installable everywhere)
+  description: Example tool
+  depends: libfoo, libbar >= 2.0, a | b
+  conflicts: example-git
+  provides: example-virtual
+  replaces: oldexample
+
+depends/conflicts use libsolv relations: name, "name >= version" (also <, <=,
+=, >), and "a | b" alternatives. "replaces" removes the named package when
+this one is installed.
+
+
+Recipes (Tatamifile)
+--------------------
+Same idea as pkgmk's Pkgfile: a shell script. Metadata are variables, the
+build is a function. $SRC is the unpacked source, $PKG the package root.
+
+  # Description: Example tool
+  name=example
+  version=1.0
+  release=1
+  source=(http://host/example-$version.tar.gz)
+  depends=(libfoo "libbar >= 2.0")
+  conflicts=()  provides=()  replaces=()
+
+  build() {
+          cd example-$version
+          ./configure --prefix=/usr
+          make
+          make DESTDIR=$PKG install
+  }
+
+tatamk [-f recipe] [-o outdir] builds it into <name>_<version>-<release>.<ext>.
+A ".md5sum" file next to the recipe is checked if present.
+
+
+Isolated builds (bulkhead)
+--------------------------
+tatamk runs build() inside a Bubblewrap sandbox by default, through
+
+  tatami bulkhead <host_destdir> -- <command> [args...]
+
+which runs  bwrap --ro-bind / / --dev /dev --tmpfs /tmp
+--bind <host_destdir> /tmp/destdir --unshare-net --unshare-pid --die-with-parent
+-- <command>  and passes the command's exit status through (128+N when it
+was killed by signal N; 255 if bwrap could not be started; 2 for usage errors).
+Inside, the system is read-only and offline, $SRC is a copy in /tmp/build/src and
+$PKG and $DESTDIR are /tmp/destdir (inside the tmpfs, so no mount point is needed
+on the read-only root). Sources are fetched and checked before the
+sandbox starts, so downloads must be declared in source=().
+
+tatamk refuses to build when bwrap is missing, unless you opt out with
+--no-bulkhead (alias --no-sandbox) or BULKHEAD=no in tatami.conf. --bulkhead
+forces the sandbox over the config setting.
+
+
+Repositories
+------------
+A repository is a directory of package files. REPO_DIRS in tatami.conf lists
+them; "tatami update" scans them and writes the index (var/lib/tatami/index).
+Run it again whenever packages are added or removed.
+
+
+Files
+-----
+/etc/tatami.conf               settings and UPGRADE/INSTALL rules
+/var/lib/tatami/db             installed packages and their files
+/var/lib/tatami/meta/<name>    metadata of installed packages
+/var/lib/tatami/index          repository index
+/var/lib/tatami/rejected/      new versions of files that were kept (UPGRADE ... NO)
+
+
+Copyright
+---------
+Derived from the design (and parts of the code) of pkgutils, Copyright (c)
+2000-2005 Per Liden and 2006-2021 the CRUX team, licensed under the GNU
+General Public License version 2 or later.

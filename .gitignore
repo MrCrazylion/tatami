@@ -1,0 +1,16 @@
+*.o
+*.d
+.depend
+/tatami
+/tatamk
+/tests/work
+.flags
+
+.claude.json
+.claude/
+
+.keep_*
+*.tar.pkg
+*.pkg
+*.tar.gz
+*.tar.xz

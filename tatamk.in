@@ -1,0 +1,267 @@
+#!/bin/bash
+#
+#  tatamk #VERSION#
+#
+#  Builds a tatami package from a recipe (Tatamifile). The recipe format is
+#  the pkgmk Pkgfile format with real dependency fields:
+#
+#    # Description: Example tool
+#    name=example
+#    version=1.0
+#    release=1
+#    source=(http://host/example-$version.tar.gz patch.diff)
+#    depends=(libfoo "libbar >= 2.0" "a | b")
+#    conflicts=(example-git)
+#    provides=(example-virtual)
+#    replaces=(oldexample)
+#    arch=noarch                    # optional, default: machine architecture
+#
+#    build() {
+#            cd example-$version
+#            ./configure --prefix=/usr
+#            make
+#            make DESTDIR=$PKG install
+#    }
+#
+#  $SRC is the unpacked source directory, $PKG the package root.
+#
+
+TATAMI_CONF="/etc/tatami.conf"
+PKG_EXT="#PKG_EXT#"
+
+info() { echo "=======> $1"; }
+error() { echo "=======> ERROR: $1" >&2; }
+die() { error "$1"; exit 1; }
+
+print_help() {
+	echo "usage: ${0##*/} [options]"
+	echo "options:"
+	echo "  -f, --file <recipe>   recipe to build (default: Tatamifile)"
+	echo "  -o, --output <dir>    where to put the package (default: current directory)"
+	echo "  -c, --config <file>   use alternative configuration file"
+	echo "  -k, --keep-work       do not remove the work directory"
+	echo "      --no-bulkhead     build on the host, without the bwrap sandbox"
+	echo "                        (alias --no-sandbox; or BULKHEAD=no in tatami.conf)"
+	echo "      --bulkhead        force the sandbox even if tatami.conf disables it"
+	echo "  -v, --version         print version and exit"
+	echo "  -h, --help            print help and exit"
+}
+
+conf_get() {
+	# value of the last KEY=value line of the configuration file
+	[ -r "$TATAMI_CONF" ] || return 0
+	sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" "$TATAMI_CONF" | tail -n 1 |
+		sed -e 's/[[:space:]]*$//' -e 's/^["'"'"']//' -e 's/["'"'"']$//'
+}
+
+join_deps() {
+	local IFS=,
+	local out="" item
+	for item in "$@"; do
+		[ -n "$out" ] && out="$out, "
+		out="$out$item"
+	done
+	echo "$out"
+}
+
+RECIPE="Tatamifile"
+OUTDIR="$PWD"
+KEEP_WORK="no"
+BULKHEAD_OPT=""
+TATAMI="${TATAMI:-tatami}"     # the tatami binary providing 'bulkhead'
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-f|--file) [ -n "$2" ] || die "option $1 requires an argument"; RECIPE="$2"; shift ;;
+	-o|--output) [ -n "$2" ] || die "option $1 requires an argument"; OUTDIR="$2"; shift ;;
+	-c|--config) [ -n "$2" ] || die "option $1 requires an argument"; TATAMI_CONF="$2"; shift ;;
+	-k|--keep-work) KEEP_WORK="yes" ;;
+	--no-bulkhead|--no-sandbox) BULKHEAD_OPT="no" ;;
+	--bulkhead) BULKHEAD_OPT="yes" ;;
+	-v|--version) echo "tatamk #VERSION#"; exit 0 ;;
+	-h|--help) print_help; exit 0 ;;
+	*) die "invalid option $1" ;;
+	esac
+	shift
+done
+
+[ -r "$RECIPE" ] || die "recipe '$RECIPE' not found"
+
+v=$(conf_get PKG_EXT)
+[ -n "$v" ] && PKG_EXT="${v#.}"
+COMPRESSION=$(conf_get PKG_COMPRESSION)
+if [ -z "$COMPRESSION" ]; then
+	case "$PKG_EXT" in
+	*gz) COMPRESSION=gz ;;
+	*xz) COMPRESSION=xz ;;
+	*zst) COMPRESSION=zst ;;
+	*bz2) COMPRESSION=bz2 ;;
+	*) COMPRESSION=gz ;;
+	esac
+fi
+case "$COMPRESSION" in
+gz|xz|zst|bz2|none) ;;
+*) die "invalid PKG_COMPRESSION '$COMPRESSION' (use gz, xz, zst, bz2 or none)" ;;
+esac
+case "$PKG_EXT" in
+""|*[!A-Za-z0-9._-]*) die "invalid PKG_EXT '$PKG_EXT'" ;;
+esac
+if [ "$COMPRESSION" != none ]; then
+	case "$COMPRESSION" in gz) tool=gzip ;; zst) tool=zstd ;; bz2) tool=bzip2 ;; *) tool=$COMPRESSION ;; esac
+	command -v "$tool" >/dev/null 2>&1 || die "compression program '$tool' not found"
+fi
+BULKHEAD="${BULKHEAD_OPT:-$(conf_get BULKHEAD)}"
+BULKHEAD="${BULKHEAD:-yes}"
+case "$BULKHEAD" in
+yes|no) ;;
+*) die "invalid BULKHEAD '$BULKHEAD' (use yes or no)" ;;
+esac
+if [ "$BULKHEAD" = yes ]; then
+	command -v bwrap >/dev/null 2>&1 || die "isolated builds require bwrap (bubblewrap), which was not found in PATH.
+         Install bubblewrap, or build without isolation using --no-bulkhead (or BULKHEAD=no in tatami.conf)."
+	command -v "$TATAMI" >/dev/null 2>&1 || die "isolated builds need the tatami binary ('$TATAMI' not found in PATH; set TATAMI=/path/to/tatami)"
+fi
+ARCH=$(conf_get ARCH)
+[ -n "$ARCH" ] || ARCH=$(uname -m)
+
+RECIPE_DIR=$(cd "$(dirname "$RECIPE")" && pwd) || die "cannot enter recipe directory"
+RECIPE_FILE="$RECIPE_DIR/$(basename "$RECIPE")"
+mkdir -p "$OUTDIR" || die "cannot create $OUTDIR"
+OUTDIR=$(cd "$OUTDIR" && pwd)
+
+# Recipe variables
+unset name version release source depends conflicts provides replaces arch
+unset -f build
+. "$RECIPE_FILE" || die "could not read $RECIPE"
+
+for item in "${depends[@]}" "${conflicts[@]}" "${provides[@]}" "${replaces[@]}"; do
+	case "$item" in
+	*,*|*$'\n'*) die "relation '$item' must not contain a comma or newline (use one array element per relation)" ;;
+	esac
+done
+
+[ -n "$name" ] || die "recipe does not set 'name'"
+[ -n "$version" ] || die "recipe does not set 'version'"
+[ "$(type -t build)" = "function" ] || die "recipe does not define build()"
+case "$name$version$release" in
+*[!A-Za-z0-9+.~:-]*) die "name, version and release may only contain letters, digits and + . ~ : - ('_' separates name and version in file names)" ;;
+esac
+case "$name" in [!A-Za-z0-9]*) die "name must start with a letter or digit" ;; esac
+
+pkgversion="$version"
+[ -n "$release" ] && pkgversion="$version-$release"
+pkgarch="${arch:-$ARCH}"
+PKGFILE="${name}_${pkgversion}.$PKG_EXT"
+
+WORK="$RECIPE_DIR/work"
+SRC="$WORK/src"
+PKG="$WORK/pkg"
+export SRC PKG name version release
+
+cleanup() { [ "$KEEP_WORK" = "yes" ] || rm -rf "$WORK"; }
+trap cleanup EXIT
+trap 'error "interrupted"; exit 1' INT TERM HUP
+
+rm -rf "$WORK"
+mkdir -p "$SRC" "$PKG" || die "cannot create work directory"
+chmod 0755 "$PKG"
+
+# Fetch and verify sources
+info "Collecting sources"
+for s in "${source[@]}"; do
+	file="${s##*/}"
+	if [[ "$s" == *://* ]]; then
+		if [ ! -e "$RECIPE_DIR/$file" ]; then
+			info "Downloading $s"
+			curl -fL --retry 3 -o "$RECIPE_DIR/$file.part" "$s" || { rm -f "$RECIPE_DIR/$file.part"; die "download of $s failed"; }
+			mv "$RECIPE_DIR/$file.part" "$RECIPE_DIR/$file"
+		fi
+	fi
+	[ -e "$RECIPE_DIR/$file" ] || die "source '$file' not found"
+done
+
+if [ -f "$RECIPE_DIR/.md5sum" ] && [ ${#source[@]} -gt 0 ]; then
+	info "Checking md5sum"
+	(
+		cd "$RECIPE_DIR" || exit 1
+		for s in "${source[@]}"; do
+			base="${s##*/}"
+			awk -v f="$base" '$2 == f || $2 == "*" f { print; found = 1 } END { exit !found }' .md5sum \
+				|| { echo "no checksum for $base" >&2; exit 1; }
+		done | md5sum -c --quiet -
+	) || die "md5sum verification failed"
+fi
+
+info "Unpacking sources"
+for s in "${source[@]}"; do
+	file="$RECIPE_DIR/${s##*/}"
+	case "$file" in
+	*.tar|*.tar.gz|*.tgz|*.tar.bz2|*.tbz2|*.tar.xz|*.txz|*.tar.zst|*.tar.lz)
+		tar -xf "$file" -C "$SRC" || die "could not unpack $file" ;;
+	*.zip)
+		(cd "$SRC" && unzip -q "$file") || die "could not unpack $file" ;;
+	*)
+		cp -R "$file" "$SRC/" || die "could not copy $file" ;;
+	esac
+done
+
+info "Building $PKGFILE"
+if [ "$BULKHEAD" = yes ]; then
+	# Inside the sandbox the system is read-only: sources are copied to
+	# /tmp/build (tmpfs), the package root is /tmp/destdir (PKG and DESTDIR).
+	"$TATAMI" bulkhead "$PKG" -- bash -c '
+		export PKG=/tmp/destdir DESTDIR=/tmp/destdir SRC=/tmp/build/src
+		. "$1" || exit 1
+		set -e
+		mkdir -p "$SRC"
+		cp -a "$2"/. "$SRC"/
+		cd "$SRC"
+		build
+	' tatamk-build "$RECIPE_FILE" "$SRC"
+else
+	( set -e; cd "$SRC"; build )
+fi
+[ $? -eq 0 ] || die "building $name failed"
+
+# Package metadata
+[ -n "$(ls -A "$PKG")" ] || die "build() installed nothing into \$PKG"
+
+{
+	echo "name: $name"
+	echo "version: $pkgversion"
+	echo "arch: $pkgarch"
+	desc=$(sed -n 's/^# *Description: *//p' "$RECIPE_FILE" | head -n 1)
+	[ -n "$desc" ] && echo "description: $desc"
+	[ ${#depends[@]} -gt 0 ] && echo "depends: $(join_deps "${depends[@]}")"
+	[ ${#conflicts[@]} -gt 0 ] && echo "conflicts: $(join_deps "${conflicts[@]}")"
+	[ ${#provides[@]} -gt 0 ] && echo "provides: $(join_deps "${provides[@]}")"
+	[ ${#replaces[@]} -gt 0 ] && echo "replaces: $(join_deps "${replaces[@]}")"
+} > "$WORK/.META"
+
+info "Creating $PKGFILE"
+rm -f "$PKG/.META"
+(
+	set -e -o pipefail
+	cd "$PKG"
+	{ echo .META; find . -mindepth 1 -printf '%P\n' | LC_ALL=C sort; } > "$WORK/filelist"
+	cp "$WORK/.META" "$PKG/.META"
+	tar --numeric-owner --no-recursion --verbatim-files-from -T "$WORK/filelist" -cf "$WORK/package.tar"
+)
+rc=$?
+if [ $rc -eq 0 ]; then
+	case "$COMPRESSION" in
+	gz) gzip -9n -c "$WORK/package.tar" ;;
+	xz) xz -T0 -c "$WORK/package.tar" ;;
+	zst) zstd -19 -T0 -q -c "$WORK/package.tar" ;;
+	bz2) bzip2 -c "$WORK/package.tar" ;;
+	none) cat "$WORK/package.tar" ;;
+	esac > "$OUTDIR/$PKGFILE.part"
+	rc=$?
+fi
+if [ $rc -ne 0 ]; then
+	rm -f "$OUTDIR/$PKGFILE.part"
+	die "could not create package"
+fi
+mv "$OUTDIR/$PKGFILE.part" "$OUTDIR/$PKGFILE" || die "could not create package"
+
+info "Built $OUTDIR/$PKGFILE"
