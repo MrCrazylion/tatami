@@ -39,9 +39,9 @@ static void print_help()
 	     << "  -s, --simulate       show what would be done, change nothing" << endl
 	     << "  -r, --root <path>    use an alternative installation root" << endl
 	     << "  -c, --config <file>  use an alternative configuration file" << endl
-	     << "      --installed      list: only installed packages" << endl
-	     << "      --upgradable     list: only packages with a newer version" << endl
-	     << "      --available      list: only packages in the index" << endl
+	     << "      --installed      list: installed packages (the default)" << endl
+	     << "      --upgradable     list: installed packages with a newer version available" << endl
+	     << "      --available      list: packages in the repository index instead" << endl
 	     << "  -v, --version        print version and exit" << endl
 	     << "  -h, --help           print help and exit" << endl;
 }

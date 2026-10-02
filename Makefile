@@ -6,6 +6,7 @@ DESTDIR =
 BINDIR = /usr/bin
 MANDIR = /usr/share/man
 ETCDIR = /etc
+VARDIR = /var/lib/tatami
 
 VERSION = 0.1.0
 NAME = tatami-$(VERSION)
@@ -65,10 +66,20 @@ src/%.o: src/%.cc .flags
 check: all
 	bash tests/run.sh
 
+# The filesystem skeleton is created with plain 'mkdir -p': directories that
+# already exist are left exactly as they are (mode, owner and contents), and
+# an existing configuration file is never overwritten. Binaries are replaced,
+# as for any upgrade. The package database, index and metadata directories
+# below $(VARDIR) are created by tatami itself on first use.
 install: all
-	install -D -m0755 tatami $(DESTDIR)$(BINDIR)/tatami
-	install -D -m0755 tatamk $(DESTDIR)$(BINDIR)/tatamk
-	install -D -m0644 tatami.conf $(DESTDIR)$(ETCDIR)/tatami.conf
+	mkdir -p $(DESTDIR)$(BINDIR) $(DESTDIR)$(ETCDIR) $(DESTDIR)$(VARDIR)/packages
+	install -m0755 tatami $(DESTDIR)$(BINDIR)/tatami
+	install -m0755 tatamk $(DESTDIR)$(BINDIR)/tatamk
+	@if [ -e $(DESTDIR)$(ETCDIR)/tatami.conf ]; then \
+		echo "keeping existing $(DESTDIR)$(ETCDIR)/tatami.conf"; \
+	else \
+		install -m0644 tatami.conf $(DESTDIR)$(ETCDIR)/tatami.conf; \
+	fi
 
 clean:
 	rm -f $(OBJECTS) $(OBJECTS:.o=.d)

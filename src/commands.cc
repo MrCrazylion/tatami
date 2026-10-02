@@ -538,19 +538,24 @@ void cmd_show(context& ctx)
 	}
 }
 
+// list: what is installed, straight from the database. The repository index
+// is only read for --available and --upgradable, so a removed package never
+// shows up here just because it is still available.
 void cmd_list(context& ctx)
 {
-	session s(ctx, false, true);
+	const bool need_index = ctx.opt.available_only || ctx.opt.upgradable_only;
+	session s(ctx, false, need_index);
 	regex_guard re(ctx.args.empty() ? "" : ctx.args[0], 0);
 	map<string, pkgmeta> avail = newest(*s.res, s.index);
 	set<string> names;
 
-	if (!ctx.opt.available_only)
-		for (packages_t::const_iterator i = s.db.packages().begin(); i != s.db.packages().end(); ++i)
-			names.insert(i->first);
-	if (!ctx.opt.installed_only && !ctx.opt.upgradable_only)
+	if (ctx.opt.available_only) {
 		for (map<string, pkgmeta>::const_iterator i = avail.begin(); i != avail.end(); ++i)
 			names.insert(i->first);
+	} else {
+		for (packages_t::const_iterator i = s.db.packages().begin(); i != s.db.packages().end(); ++i)
+			names.insert(i->first);
+	}
 
 	size_t shown = 0;
 	for (set<string>::const_iterator i = names.begin(); i != names.end(); ++i) {
@@ -564,13 +569,16 @@ void cmd_list(context& ctx)
 		if (ctx.opt.upgradable_only && !upgradable)
 			continue;
 
-		if (!inst.empty()) {
+		if (ctx.opt.available_only) {
+			cout << *i << "/" << a->second.version;
+			if (!inst.empty())
+				cout << (inst == a->second.version ? " [installed]" : " [installed: " + inst + "]");
+			cout << endl;
+		} else {
 			cout << *i << "/" << inst << " [installed";
 			if (upgradable)
 				cout << ", upgradable to " << a->second.version;
 			cout << "]" << endl;
-		} else {
-			cout << *i << "/" << a->second.version << endl;
 		}
 		shown++;
 	}
@@ -639,9 +647,9 @@ const command_t commands[] = {
 	{ "install", "add",  "install <pkg|file>...",    "install packages (and their dependencies) or upgrade them", true,  cmd_install },
 	{ "remove",  "rm",   "remove <package>...",      "remove packages and everything that depends on them",     true,  cmd_remove },
 	{ "upgrade", 0,      "upgrade",                  "upgrade all installed packages",                           true,  cmd_upgrade },
-	{ "search",  0,      "search <regex>",           "search package names and descriptions",                    false, cmd_search },
+	{ "search",  0,      "search <regex>",           "search the repository index (names and descriptions)",     false, cmd_search },
 	{ "show",    "info", "show <package>...",        "show package details",                                     false, cmd_show },
-	{ "list",    "ls",   "list [regex]",             "list packages (see --installed, --upgradable, --available)", false, cmd_list },
+	{ "list",    "ls",   "list [regex]",             "list installed packages (--upgradable, --available)",      false, cmd_list },
 	{ "files",   0,      "files <package|file>",     "list the files of an installed package or a package file", false, cmd_files },
 	{ "owns",    0,      "owns <regex>",             "find the package owning files matching the pattern",       false, cmd_owns },
 };

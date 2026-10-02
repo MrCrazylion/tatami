@@ -234,6 +234,19 @@ absent "libfoo gone" usr/lib/libfoo.so.1
 absent "empty dirs cleaned" usr/share/app
 absent "metadata removed" var/lib/tatami/meta/libfoo
 exists "other packages untouched" usr/bin/newname
+check "list shows installed packages only" 0 t list
+hasnt "a removed package is not listed" "^libfoo/"
+hasnt "available but not installed packages are not listed" "^clash/"
+has "installed packages are listed" "^newname/1.0-1 \\[installed\\]"
+check "list --available reads the repository index" 0 t list --available
+has "removed package is still available" "^libfoo/3.0-1$"
+has "available package that was never installed" "^clash/1.0-1$"
+has "installed package is marked in the available list" "^newname/1.0-1 \\[installed\\]"
+check "search reads the index too" 0 t search '^libfoo$'
+has "search still finds the removed package" "^libfoo/3.0-1"
+check "list works without any repository index" 0 bash -c "mkdir -p '$T/noidx/var/lib/tatami' && cp '$ROOT/var/lib/tatami/db' '$T/noidx/var/lib/tatami/db' && '$TATAMI' -r '$T/noidx' -c '$CONF' list"
+has "list from the database alone" "^newname/1.0-1 \\[installed\\]"
+absent "list did not create an index" ../noidx/var/lib/tatami/index
 check "remove not installed" 1 ty remove libfoo
 check "database backup exists" 0 test -f "$ROOT/var/lib/tatami/db.backup"
 
@@ -273,22 +286,32 @@ cat > "$MOCK/bwrap" <<'MOCKEOF'
 # Mock bubblewrap: verifies the complete argument vector, then behaves as told.
 printf '%s\n' "$@" > "$MOCK_LOG"
 args=("$@")
-expect=(--ro-bind / / --dev /dev --tmpfs /tmp --bind "$MOCK_DEST" /tmp/destdir
-	--unshare-net --unshare-pid --die-with-parent --)
-for i in "${!expect[@]}"; do
-	# with MOCK_ANY_DEST the host side of the /tmp/destdir mapping (argument 8) is not pinned
-	[ -n "$MOCK_ANY_DEST" ] && [ "$i" = 8 ] && continue
-	if [ "${args[$i]}" != "${expect[$i]}" ]; then
-		echo "mock bwrap: argument $i is '${args[$i]}', expected '${expect[$i]}'" >&2
-		exit 97
-	fi
+fail() { echo "mock bwrap: $1" >&2; exit 97; }
+expect() { # expect <index> <value...>: consecutive arguments from <index>
+	local i=$1; shift
+	for v in "$@"; do
+		[ "${args[$i]}" = "$v" ] || fail "argument $i is '${args[$i]}', expected '$v'"
+		i=$((i+1))
+	done
+}
+# system read-only, own /dev and /proc, empty /tmp, /home and /root
+expect 0 --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /home --tmpfs /root
+i=13
+# optional read-only re-exposed host paths, only valid after the tmpfs mounts
+while [ "${args[$i]}" = --ro-bind ]; do
+	[ "${args[$((i+1))]}" = "${args[$((i+2))]}" ] || fail "--ro-bind of '${args[$((i+1))]}' to a different path"
+	i=$((i+3))
 done
-rest=("${args[@]:${#expect[@]}}")
+nro=$(( (i-13)/3 ))
+expect $i --bind; DESTIDX=$((i+1))
+[ -n "$MOCK_ANY_DEST" ] || expect $DESTIDX "$MOCK_DEST"
+expect $((i+2)) /tmp/destdir --unshare-net --unshare-pid --die-with-parent --
+rest=("${args[@]:$((i+7))}")
 [ -n "$MOCK_EXIT" ] && exit "$MOCK_EXIT"
 [ -n "$MOCK_KILL" ] && kill -"$MOCK_KILL" $$
 if [ -n "$MOCK_EMULATE" ]; then
 	# crude stand-in for the mounts, only used when explicitly requested
-	ln -sfn "${args[8]}" /tmp/destdir; mkdir -p /tmp/build
+	ln -sfn "${args[$DESTIDX]}" /tmp/destdir; mkdir -p /tmp/build
 	trap 'rm -f /tmp/destdir; rm -rf /tmp/build' EXIT
 	"${rest[@]}"; exit $?
 fi
@@ -306,7 +329,16 @@ check "log: pid namespace" 0 grep -qx -- --unshare-pid "$MOCK_LOG"
 check "log: dies with parent" 0 grep -qx -- --die-with-parent "$MOCK_LOG"
 check "log: destdir mapped to /tmp/destdir" 0 grep -qx -- /tmp/destdir "$MOCK_LOG"
 check "log: no separate /build tmpfs" 1 grep -qx -- /build "$MOCK_LOG"
+check "log: own /proc (host processes hidden)" 0 grep -qx -- --proc "$MOCK_LOG"
+check "log: /home is an empty tmpfs" 0 bash -c "grep -x -A1 -- --tmpfs '$MOCK_LOG' | grep -qx /home"
+check "log: /root is an empty tmpfs" 0 bash -c "grep -x -A1 -- --tmpfs '$MOCK_LOG' | grep -qx /root"
 check "log: command follows --" 0 bash -c "tail -n 2 '$MOCK_LOG' | tr '\n' ' ' | grep -q 'echo hello'"
+mkdir -p "$T/rodir"; echo recipe > "$T/rodir/Tatamifile"
+check "--ro paths are accepted and passed as read-only binds" 0 bh --ro "$T/rodir/Tatamifile" --ro "$T/rodir" "$DEST" -- true
+check "log: each --ro path is bound to itself (source and target)" 0 bash -c "[ \$(grep -Fxc '$T/rodir/Tatamifile' '$MOCK_LOG') = 2 ] && [ \$(grep -Fxc '$T/rodir' '$MOCK_LOG') = 2 ]"
+check "log: --ro binds come after the /home tmpfs" 0 bash -c "tail -n +1 '$MOCK_LOG' | grep -nx -e /home -e '$T/rodir/Tatamifile' | head -2 | cut -d: -f2 | tr '\n' ' ' | grep -qx '/home $T/rodir/Tatamifile '"
+"$TATAMI" bulkhead --ro "$T/no-such-path" "$DEST" -- true >/dev/null 2>&1; [ $? -eq 2 ] && ok "--ro with a missing path is a usage error (2)" || bad "missing --ro path"
+"$TATAMI" bulkhead --ro >/dev/null 2>&1; [ $? -eq 2 ] && ok "--ro without a value is a usage error (2)" || bad "--ro without value"
 check "command arguments pass through unchanged" 0 bh "$DEST" -- bash -c 'echo "a b" "$1"' x 'c d'
 has "arguments with spaces intact" "^a b c d$"
 MOCK_EXIT=0 bh "$DEST" -- true >/dev/null 2>&1; [ $? -eq 0 ] && ok "mock exiting 0 gives 0" || bad "mock exit 0"
@@ -374,6 +406,25 @@ else
 	echo "skip - sandboxed tatamk build (needs root and no /tmp/build or /tmp/destdir on this host)"
 fi
 unset MOCK_LOG MOCK_DEST
+
+echo "# architecture-independent packages"
+mkpkg na-noarch 1.0 arch=noarch file=usr/share/na/noarch
+mkpkg na-any 1.0 arch=any file=usr/share/na/any
+mkpkg na-all 1.0 arch=all file=usr/share/na/all
+mkpkg na-mixed 1.0 arch=NoArch file=usr/share/na/mixed
+mkpkg na-none 1.0 file=usr/share/na/none
+mkpkg na-foreign 1.0 arch=riscv64z file=usr/share/na/foreign
+check "noarch, any, all, NoArch and no-arch packages install on this host" 0 ty install na-noarch na-any na-all na-mixed na-none
+exists "noarch installed" usr/share/na/noarch
+exists "any installed" usr/share/na/any
+exists "all installed" usr/share/na/all
+exists "mixed-case NoArch installed" usr/share/na/mixed
+exists "package without arch installed" usr/share/na/none
+check "a package for another architecture is still refused" 1 ty install na-foreign
+has "with the architecture message" "incompatible with this system"
+absent "foreign package not installed" usr/share/na/foreign
+check "noarch also installs from a file argument" 0 ty install "$REPO/na-any_1.0-1.$EXT"
+check "noarch installs when the host architecture is unknown to libsolv" 0 bash -c "echo 'ARCH = zz80' > '$T/zz.conf'; cat '$CONF' >> '$T/zz.conf'; '$TATAMI' -r '$ROOT' -c '$T/zz.conf' -s install na-noarch"
 
 echo "# file names: <name>_<version>.<ext>"
 mkpkg libfoo-dev 2.0 "depends=libfoo >= 1.0" file=usr/include/foo.h

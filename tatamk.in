@@ -209,7 +209,9 @@ info "Building $PKGFILE"
 if [ "$BULKHEAD" = yes ]; then
 	# Inside the sandbox the system is read-only: sources are copied to
 	# /tmp/build (tmpfs), the package root is /tmp/destdir (PKG and DESTDIR).
-	"$TATAMI" bulkhead "$PKG" -- bash -c '
+	# /home and /root are empty in the sandbox, so the recipe and the sources
+	# (which may live there) are mapped back read-only.
+	"$TATAMI" bulkhead --ro "$RECIPE_FILE" --ro "$SRC" "$PKG" -- bash -c '
 		export PKG=/tmp/destdir DESTDIR=/tmp/destdir SRC=/tmp/build/src
 		. "$1" || exit 1
 		set -e

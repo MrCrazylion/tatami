@@ -1,6 +1,7 @@
 #include "resolver.h"
 #include "util.h"
 #include <cstring>
+#include <cctype>
 #include <iostream>
 #include <cstdio>
 #include <cstdlib>
@@ -13,6 +14,24 @@ extern "C" {
 #include <solv/solverdebug.h>
 #include <solv/evr.h>
 #include <solv/knownid.h>
+}
+
+// The architecture a package is solved with. Architecture-independent
+// packages (noarch, all, any; any capitalisation) are installable on every
+// host, so they are always filed under libsolv's "noarch". A package without
+// an architecture is treated as noarch too, except an installed one (stored
+// metadata may predate the field), which is assumed to be for this host.
+static string effective_arch(const string& arch, const string& host, bool installed)
+{
+	string a = trim(arch);
+	for (string::size_type i = 0; i < a.size(); i++)
+		a[i] = tolower((unsigned char)a[i]);
+
+	if (a.empty())
+		return installed ? host : "noarch";
+	if (a == "noarch" || a == "all" || a == "any")
+		return "noarch";
+	return arch;
 }
 
 resolver::resolver(const string& arch)
@@ -143,9 +162,7 @@ Id resolver::add_solvable(Repo* repo, const pkgmeta& meta)
 	Id p = repo_add_solvable(repo);
 	Solvable* s = pool_id2solvable(pool_, p);
 
-	string arch = meta.arch;
-	if (arch.empty() || arch == "all" || arch == "any")
-		arch = (arch.empty() && repo == installed_) ? arch_ : "noarch";
+	const string arch = effective_arch(meta.arch, arch_, repo == installed_);
 
 	s->name = pool_str2id(pool_, meta.name.c_str(), 1);
 	s->evr = pool_str2id(pool_, meta.version.c_str(), 1);
