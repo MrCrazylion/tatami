@@ -443,6 +443,22 @@ check "an invalid extension in the environment is refused" 1 env 'PKG_EXT=a/b' "
 check "the config beats the build-time default" 0 "$TATAMK" -c "$CONF" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 [ -f "$T/extrepo/ext1_1.$EXT" ] && ok "config extension $EXT used" || bad "config extension not used" "$(ls "$T/extrepo")"
 
+echo "# compression formats (libarchive is vendored with zlib and zstd only)"
+for comp in gz zst xz bz2; do
+	mkdir -p "$T/comp-$comp/recipe" "$T/comp-$comp/repo" "$T/comp-$comp/root/etc"
+	printf 'name=cmp-%s\nversion=1\nbuild() { mkdir -p $PKG/usr/share/cmp; echo "compressed with %s" > $PKG/usr/share/cmp/%s; }\n' "$comp" "$comp" "$comp" > "$T/comp-$comp/recipe/Tatamifile"
+	printf 'PKG_EXT = %s\nPKG_COMPRESSION = %s\nREPO_DIRS = %s\nBULKHEAD = no\n' "$EXT" "$comp" "$T/comp-$comp/repo" > "$T/comp-$comp/conf"
+	check "tatamk builds a $comp package" 0 "$TATAMK" -c "$T/comp-$comp/conf" -f "$T/comp-$comp/recipe/Tatamifile" -o "$T/comp-$comp/repo"
+	pkgf="$T/comp-$comp/repo/cmp-${comp}_1.$EXT"
+	case "$comp" in gz) magic='1f8b' ;; zst) magic='28b52ffd' ;; xz) magic='fd377a585a00' ;; bz2) magic='425a68' ;; esac
+	[ "$(head -c 6 "$pkgf" | od -An -tx1 | tr -d ' \n' | cut -c1-${#magic})" = "$magic" ] && ok "the $comp package really is $comp-compressed" || bad "$comp package has the wrong compression" "$(head -c 6 "$pkgf" | od -An -tx1)"
+	check "tatami lists the files of a $comp package" 0 "$TATAMI" -r "$T/comp-$comp/root" -c "$T/comp-$comp/conf" files "$pkgf"
+	has "$comp: file list" "usr/share/cmp/$comp"
+	check "tatami installs a $comp package" 0 "$TATAMI" -r "$T/comp-$comp/root" -c "$T/comp-$comp/conf" -y install "$pkgf"
+	grep -qx "compressed with $comp" "$T/comp-$comp/root/usr/share/cmp/$comp" 2>/dev/null && ok "$comp: file content extracted intact" || bad "$comp: content wrong or missing"
+	check "tatami indexes a $comp package" 0 "$TATAMI" -r "$T/comp-$comp/root" -c "$T/comp-$comp/conf" update
+done
+
 echo "# file names: <name>_<version>.<ext>"
 mkpkg libfoo-dev 2.0 "depends=libfoo >= 1.0" file=usr/include/foo.h
 [ -f "$REPO/libfoo-dev_2.0-1.$EXT" ] && ok "name with a hyphen: libfoo-dev_2.0-1.$EXT" || bad "hyphenated package file name" "$(ls "$REPO")"

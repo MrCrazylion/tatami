@@ -12,11 +12,12 @@ has an apt-style command line and uses libsolv to resolve dependencies.
 
 Building and installing
 -----------------------
-Needs a C++11 compiler, libarchive (with pkg-config), cmake, a C compiler and
-the zlib headers. libsolv is not taken from the system: it is vendored as a git
-submodule in deps/libsolv and built as a minimal static library (no repository
-format parsers), so the result does not depend on what a distribution
-packages. After a fresh clone fetch it once:
+Needs a C++11 compiler, a C compiler and cmake. Nothing else is taken from the
+system: libsolv, libarchive, zstd and zlib are vendored as git submodules in
+deps/ and built as static archives, which are linked into the tatami binary
+by path (no pkg-config, no -l flags). This makes the build identical on every
+distribution; some ship no libsolv.a, and libarchive/zstd/zlib versions and
+feature sets differ. After a fresh clone fetch the sources once:
 
 $ git submodule update --init
 
@@ -25,8 +26,20 @@ $ make install                      # or: make DESTDIR=/some/other/path install
 $ make PKG_EXT=myext                # build with your own package extension
 $ make STATIC=yes                   # fully static binary
 $ make check                        # end-to-end tests (needs root)
-$ make clean                        # keeps the built libsolv
-$ make distclean                    # also removes deps/libsolv/build
+$ make clean                        # keeps the built libraries
+$ make distclean                    # also removes the deps/*/build directories
+
+Pinned versions, all release tags: libarchive v3.8.9, zstd v1.5.7, zlib v1.3.2,
+libsolv 0.7.40 (see 'git submodule status'). To update one, check out the new
+tag inside its deps/ directory, remove its deps/<name>/build directory so it is
+rebuilt, and commit the new submodule revision.
+Each static archive is only built when it does not exist yet.
+
+The vendored libarchive has gzip (zlib) and zstd built in and nothing else: no
+xz, bzip2, lz4, openssl, acl or xattr support, no libxml. Packages compressed with
+xz, bzip2 or lzip are still read, through the external xz/bzip2/lzip programs,
+which therefore have to be installed to use those formats; gz and zst need
+nothing.
 
 
 Command line
