@@ -74,7 +74,7 @@ lzip, zstd). The file name is  <name>_<version>.<extension>  (split at the last 
 names and versions may not contain '_'; hyphens are fine, e.g.
 libfoo-dev_2.0-1.tar.pkg) and the
 extension is chosen by the user (see "Custom package extension" below). tatami and tatamk both use it,
-so "tar.pkg", "pkg.tar.zst", "tatami" are all fine. Files that do not end in
+so "tar.pkg", "tatami" are all fine. Files that do not end in
 the configured extension are not indexed.
 
 The archive contains the files of the package and a metadata member named
