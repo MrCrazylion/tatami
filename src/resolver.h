@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 
 extern "C" {
 #include <solv/pool.h>
@@ -23,7 +24,7 @@ struct plan_step {
 	string version;
 	string old_version;     // UPGRADE: the installed version being replaced
 	string filename;        // INSTALL/UPGRADE: package file to extract
-	string note;            // REMOVE: why ("replaced by x")
+	string note;            // REMOVE: why ("no longer needed", "replaced by x", ...)
 };
 
 // Dependency solver built on libsolv. Dependencies, conflicts, provides and
@@ -39,9 +40,18 @@ public:
 	// Adds a package given on the command line, returns its solvable id
 	Id add_local(const pkgmeta& meta);
 
+	// Names of the packages the user asked to install (the candidates of every
+	// request, which includes providers of virtual names). Packages installed
+	// for any other reason are dependencies.
+	const set<string>& requested_names() const { return requested_; }
+
 	// Job construction. Names may be 'name', 'name=version' or a provided name.
 	void want_install(const string& spec);
 	void want_install_solvable(Id p);
+	// Removes the package, everything that depends on it, and every dependency
+	// that is then no longer needed by an explicitly installed package
+	// (SOLVER_ERASE with SOLVER_CLEANDEPS; explicit packages are handed to
+	// libsolv as SOLVER_USERINSTALLED).
 	void want_erase(const string& name);
 	void want_upgrade_all();
 
@@ -66,6 +76,7 @@ private:
 	Id add_solvable(Repo* repo, const pkgmeta& meta);
 	void prepare();
 	void clear_solution();
+	void make_jobs(Queue* jobs) const;
 	void collect_problems(Solver* solv, vector<string>& out) const;
 	string downgrade_hint();
 	Id best_available_id(const string& name) const;
@@ -83,6 +94,10 @@ private:
 	string arch_;
 	bool ready_;
 	bool erasing_;
+	set<string> requested_;                 // see requested_names()
+	set<string> erase_targets_;
+	map<string, bool> dependency_;          // installed package -> installed as a dependency
+	vector<Id> explicit_ids_;               // installed packages the user asked for
 };
 
 #endif /* RESOLVER_H */

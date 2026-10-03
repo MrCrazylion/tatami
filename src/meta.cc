@@ -48,6 +48,8 @@ bool read_meta_block(istream& in, pkgmeta& meta)
 			meta.replaces = value;
 		else if (key == "filename")
 			meta.filename = value;
+		else if (key == "reason")
+			meta.reason = value;
 		else if (key == "size")
 			meta.size = strtoull(value.c_str(), 0, 10);
 		// unknown keys are ignored so that the format can grow
@@ -92,6 +94,7 @@ string format_meta(const pkgmeta& meta)
 	put(out, "provides", meta.provides);
 	put(out, "replaces", meta.replaces);
 	put(out, "filename", meta.filename);
+	put(out, "reason", meta.reason);
 	if (meta.size)
 		out << "size: " << meta.size << "\n";
 

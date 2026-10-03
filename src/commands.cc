@@ -5,6 +5,7 @@
 #include "paths.h"
 #include "pkgarchive.h"
 #include "resolver.h"
+#include "txn.h"
 #include "util.h"
 #include <algorithm>
 #include <cstdio>
@@ -207,6 +208,10 @@ struct session {
 		: db(ctx.opt.root)
 	{
 		lock.reset(new db_lock(ctx.opt.root, exclusive));
+		// A previous run killed in the middle of an installation left a journal:
+		// undo (or finish) it before anything else looks at the system
+		if (exclusive)
+			txn::recover(db.root(), cerr);
 		db.open(exclusive);
 		res.reset(new resolver(ctx.arch));
 		res->add_installed(db.packages(), db);
@@ -230,6 +235,24 @@ struct session {
 //
 // Transactions (install, remove, upgrade)
 //
+
+// Packages the user asked for that are already installed, but only as a
+// dependency, become explicit: they must survive the removal of whatever
+// pulled them in.
+void mark_requested_explicit(const context& ctx, session& s)
+{
+	if (ctx.opt.simulate)
+		return;
+
+	const set<string>& requested = s.res->requested_names();
+	engine eng(ctx.cfg, s.db, ctx.opt.force);
+	for (set<string>::const_iterator i = requested.begin(); i != requested.end(); ++i) {
+		if (s.db.has(*i) && s.db.reason(*i) == REASON_DEPENDENCY) {
+			eng.mark_explicit(*i);
+			cout << *i << " is now marked as manually installed." << endl;
+		}
+	}
+}
 
 void run_transaction(const context& ctx, session& s, const char* verb,
 		     const vector<string>& check_names = vector<string>())
@@ -257,6 +280,7 @@ void run_transaction(const context& ctx, session& s, const char* verb,
 			for (size_t k = 0; k < why.size(); k++)
 				cerr << "  - " << why[k] << endl;
 		}
+		mark_requested_explicit(ctx, s);
 		cout << "Nothing to do." << endl;
 		return;
 	}
@@ -317,11 +341,11 @@ void run_transaction(const context& ctx, session& s, const char* verb,
 		switch (st.kind) {
 		case plan_step::INSTALL:
 			cout << "Installing " << st.name << " (" << st.version << ")..." << endl;
-			eng.install(st.filename);
+			eng.install(st.filename, s.res->requested_names().count(st.name) > 0);
 			break;
 		case plan_step::UPGRADE:
 			cout << "Upgrading " << st.name << " (" << st.old_version << " -> " << st.version << ")..." << endl;
-			eng.install(st.filename);
+			eng.install(st.filename, s.res->requested_names().count(st.name) > 0);
 			break;
 		case plan_step::REMOVE:
 			cout << "Removing " << st.name << " (" << st.version << ")..." << endl;
@@ -331,6 +355,7 @@ void run_transaction(const context& ctx, session& s, const char* verb,
 	}
 
 	eng.ldconfig();
+	mark_requested_explicit(ctx, s);
 	cout << "Done." << endl;
 }
 
@@ -535,6 +560,9 @@ void cmd_show(context& ctx)
 			print_field("Size", itos(shown->size) + " bytes");
 		print_field("Filename", shown->filename);
 		cout << "Status: " << (iv.empty() ? "not installed" : "installed (" + iv + ")") << endl;
+		if (!iv.empty())
+			cout << "Installed: " << (s.db.reason(name) == REASON_DEPENDENCY
+						? "automatically, as a dependency" : "manually, by request") << endl;
 	}
 }
 
@@ -645,7 +673,7 @@ void cmd_owns(context& ctx)
 const command_t commands[] = {
 	{ "update",  0,      "update",                   "build the package index from the configured repositories", true,  cmd_update },
 	{ "install", "add",  "install <pkg|file>...",    "install packages (and their dependencies) or upgrade them", true,  cmd_install },
-	{ "remove",  "rm",   "remove <package>...",      "remove packages and everything that depends on them",     true,  cmd_remove },
+	{ "remove",  "rm",   "remove <package>...",      "remove packages, their dependents and unused dependencies", true,  cmd_remove },
 	{ "upgrade", 0,      "upgrade",                  "upgrade all installed packages",                           true,  cmd_upgrade },
 	{ "search",  0,      "search <regex>",           "search the repository index (names and descriptions)",     false, cmd_search },
 	{ "show",    "info", "show <package>...",        "show package details",                                     false, cmd_show },

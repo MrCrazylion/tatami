@@ -18,9 +18,20 @@ class engine {
 public:
 	engine(const config_t& cfg, database& db, bool force);
 
-	// Installs or upgrades (if the package is already installed) a package file
-	void install(const string& filename);
+	// Installs or upgrades (if the package is already installed) a package file.
+	// 'requested' is true if the user asked for this package, false if it is
+	// only installed to satisfy a dependency.
+	//
+	// All or nothing: the files are extracted first, with every change
+	// recorded; if anything fails the filesystem is restored exactly and the
+	// database is left untouched. The database is committed only after the
+	// whole package was extracted.
+	void install(const string& filename, bool requested);
 	void remove(const string& name);
+
+	// Marks an installed package as explicitly installed (it is no longer
+	// removed automatically when nothing depends on it)
+	void mark_explicit(const string& name);
 	void ldconfig() const;
 
 private:

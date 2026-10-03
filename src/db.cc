@@ -196,14 +196,67 @@ void database::commit()
 	}
 }
 
-void database::add_pkg(const string& name, const pkgrecord& rec, const pkgmeta& meta)
+void database::add_pkg(const string& name, const pkgrecord& rec, const pkgmeta& meta, const string& reason)
 {
 	packages_[name] = rec;
 	pkgmeta m = meta;
 	m.filename = "";
 	m.size = 0;
 	m.version = rec.version;
+	m.reason = reason;
 	metas_[name] = m;
+}
+
+string database::reason(const string& name) const
+{
+	const pkgmeta* m = meta(name);
+	return (m && m->reason == REASON_DEPENDENCY) ? REASON_DEPENDENCY : REASON_EXPLICIT;
+}
+
+void database::set_reason(const string& name, const string& reason)
+{
+	map<string, pkgmeta>::iterator i = metas_.find(name);
+	if (i != metas_.end()) {
+		i->second.reason = reason;
+		return;
+	}
+	// Installed without stored metadata: create a minimal record to hold the reason
+	packages_t::const_iterator p = packages_.find(name);
+	if (p != packages_.end()) {
+		pkgmeta m;
+		m.name = name;
+		m.version = p->second.version;
+		m.reason = reason;
+		metas_[name] = m;
+	}
+}
+
+set<string> database::stale_files(const string& name, const set<string>& new_files) const
+{
+	set<string> stale;
+	packages_t::const_iterator old = packages_.find(name);
+	if (old == packages_.end())
+		return stale;
+
+	for (set<string>::const_iterator f = old->second.files.begin(); f != old->second.files.end(); ++f) {
+		if (new_files.find(*f) != new_files.end())
+			continue;
+		bool owned_elsewhere = false;
+		for (packages_t::const_iterator p = packages_.begin(); p != packages_.end() && !owned_elsewhere; ++p)
+			if (p->first != name && p->second.files.find(*f) != p->second.files.end())
+				owned_elsewhere = true;
+		if (!owned_elsewhere)
+			stale.insert(*f);
+	}
+
+	return stale;
+}
+
+void database::unreference(const set<string>& files)
+{
+	for (packages_t::iterator i = packages_.begin(); i != packages_.end(); ++i)
+		for (set<string>::const_iterator j = files.begin(); j != files.end(); ++j)
+			i->second.files.erase(*j);
 }
 
 void database::remove_files(const set<string>& files) const

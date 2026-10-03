@@ -36,7 +36,7 @@ endif
 DEPS_DIR = $(CURDIR)/deps
 
 LIBSOLV_DIR   = $(DEPS_DIR)/libsolv
-LIBSOLV_BUILD = $(LIBSOLV_DIR)/build
+LIBSOLV_BUILD = $(LIBSOLV_DIR)/cmake-build
 LIBSOLV_A     = $(LIBSOLV_BUILD)/src/libsolv.a
 # libsolv's headers sit flat in its src/ directory and are only given their
 # <solv/...> names by 'make install'; they are staged under that name here.
@@ -49,16 +49,18 @@ LIBSOLV_HDRS  = bitmap.h evr.h hash.h policy.h poolarch.h poolvendor.h pool.h \
 		chksum.h dataiterator.h
 
 ZLIB_DIR   = $(DEPS_DIR)/zlib
-ZLIB_BUILD = $(ZLIB_DIR)/build
+ZLIB_BUILD = $(ZLIB_DIR)/cmake-build
 ZLIB_A     = $(ZLIB_BUILD)/libz.a
 
-# zstd keeps its own sources in deps/zstd/build, hence another directory name
+# The build directories are all called cmake-build: some of the upstream source
+# trees already contain a directory called "build" (libarchive's has files CMake
+# reads, zstd's holds its CMake project), and 'make distclean' deletes ours.
 ZSTD_DIR   = $(DEPS_DIR)/zstd
 ZSTD_BUILD = $(ZSTD_DIR)/cmake-build
 ZSTD_A     = $(ZSTD_BUILD)/lib/libzstd.a
 
 LIBARCHIVE_DIR   = $(DEPS_DIR)/libarchive
-LIBARCHIVE_BUILD = $(LIBARCHIVE_DIR)/build
+LIBARCHIVE_BUILD = $(LIBARCHIVE_DIR)/cmake-build
 LIBARCHIVE_A     = $(LIBARCHIVE_BUILD)/libarchive/libarchive.a
 
 DEP_ARCHIVES = $(LIBSOLV_A) $(LIBARCHIVE_A) $(ZSTD_A) $(ZLIB_A)
@@ -79,7 +81,7 @@ ifeq ($(STATIC),yes)
 LDFLAGS += -static
 endif
 
-SRCS = main.cc bulkhead.cc commands.cc engine.cc resolver.cc db.cc pkgarchive.cc meta.cc config.cc util.cc
+SRCS = main.cc bulkhead.cc commands.cc engine.cc resolver.cc db.cc txn.cc pkgarchive.cc meta.cc config.cc util.cc
 OBJECTS = $(SRCS:%.cc=src/%.o)
 
 all: tatami tatamk

@@ -162,6 +162,7 @@ package_t pkg_open(const string& filename)
 
 	try {
 		result.meta.filename = "";
+		result.meta.reason = "";        // decided by tatami, never by the package
 		validate_meta(result.meta);
 	} catch (runtime_error& e) {
 		throw runtime_error(filename + ": " + e.what());
@@ -186,6 +187,7 @@ pkgmeta pkg_read_meta(const string& filename)
 		if (name == META_FILE) {
 			pkgmeta meta = parse_meta(read_entry_data(a, filename));
 			meta.filename = "";
+			meta.reason = "";
 			validate_meta(meta);
 			return meta;
 		}
@@ -197,14 +199,66 @@ pkgmeta pkg_read_meta(const string& filename)
 	throw runtime_error(filename + " is not a tatami package (no " META_FILE " member)");
 }
 
+// Records what extracting 'path' is going to change, before it happens.
+static void prepare_target(txn& tx, const string& absroot, const string& entry_path, mode_t entry_mode)
+{
+	string path = entry_path;
+	while (path.size() > 1 && path[path.size() - 1] == '/')
+		path.erase(path.size() - 1);
+
+	// Parent directories that do not exist yet are created by libarchive
+	vector<string> missing;
+	string dir = path;
+	for (;;) {
+		string::size_type slash = dir.rfind('/');
+		if (slash == string::npos)
+			break;
+		dir.erase(slash);
+		if (dir.size() <= absroot.size() || file_exists(dir))
+			break;
+		missing.push_back(dir);
+	}
+	for (vector<string>::reverse_iterator i = missing.rbegin(); i != missing.rend(); ++i)
+		tx.created(*i);
+
+	struct stat st;
+	if (lstat(path.c_str(), &st) == -1) {
+		tx.created(path);
+		return;
+	}
+
+	if (S_ISLNK(st.st_mode) && S_ISDIR(entry_mode)) {
+		// A symbolic link to a directory (/lib -> usr/lib) is accepted by libarchive
+		// as the directory: it stays a link, and the directory behind it is what
+		// the extraction may touch.
+		struct stat target;
+		if (stat(path.c_str(), &target) == 0 && S_ISDIR(target.st_mode)) {
+			tx.dir_meta(path, target);
+			return;
+		}
+	}
+
+	if (S_ISDIR(st.st_mode)) {
+		// An existing directory stays; only its mode and owner may change.
+		// A directory where a file is to be written is left to libarchive,
+		// which refuses it, and that fails the installation.
+		if (S_ISDIR(entry_mode))
+			tx.dir_meta(path, st);
+		return;
+	}
+
+	tx.backup(path);        // replaced: keep the original for a rollback
+}
+
 void pkg_install(const string& utilname, const string& root, const string& filename,
 		 const set<string>& keep_list, const set<string>& non_install_list,
-		 bool upgrade)
+		 txn& tx)
 {
 	archive_ptr ar = open_archive(filename);
 	struct archive* a = ar.get();
 	struct archive_entry* entry;
 	unsigned int i = 0;
+	int r;
 
 	if (chdir(root.c_str()) == -1)
 		throw runtime_error_with_errno("could not change directory to " + root);
@@ -216,7 +270,7 @@ void pkg_install(const string& utilname, const string& root, const string& filen
 
 	const string reject_dir = trim_filename(absroot + "/" + PKG_REJECTED);
 
-	for (; archive_read_next_header(a, &entry) == ARCHIVE_OK; ++i) {
+	for (; (r = archive_read_next_header(a, &entry)) == ARCHIVE_OK || r == ARCHIVE_WARN; ++i) {
 		mode_t mode = archive_entry_mode(entry);
 		const string archive_filename = normalize(archive_entry_pathname(entry), S_ISDIR(mode));
 
@@ -243,15 +297,11 @@ void pkg_install(const string& utilname, const string& root, const string& filen
 		if (file_exists(real_filename) && keep_list.find(archive_filename) != keep_list.end())
 			real_filename = trim_filename(reject_dir + "/" + archive_filename);
 
-		if (!inside_root(absroot, real_filename)) {
-			cerr << utilname << ": refusing to install " << archive_filename
-			     << ": it would be written outside of the installation root" << endl;
-			if (!upgrade)
-				throw runtime_error("unsafe symbolic link in path of " + archive_filename);
-			if (S_ISREG(mode))
-				archive_read_data_skip(a);
-			continue;
-		}
+		if (!inside_root(absroot, real_filename))
+			throw runtime_error("refusing to install " + archive_filename +
+					    ": it would be written outside of the installation root through a symbolic link");
+
+		prepare_target(tx, absroot, real_filename, mode);
 
 		archive_entry_set_pathname(entry, real_filename.c_str());
 
@@ -265,16 +315,8 @@ void pkg_install(const string& utilname, const string& root, const string& filen
 			    ARCHIVE_EXTRACT_TIME | ARCHIVE_EXTRACT_UNLINK;
 
 		if (archive_read_extract(a, entry, flags) != ARCHIVE_OK) {
-			// If a file fails to install we just print an error message and
-			// continue trying to install the rest of the package,
-			// unless this is not an upgrade.
 			const char* msg = archive_error_string(a);
-			if (!msg)
-				msg = "unknown error";
-			cerr << utilname << ": could not install " << archive_filename << ": " << msg << endl;
-			if (!upgrade)
-				throw runtime_error("extract error: " + archive_filename + ": " + msg);
-			continue;
+			throw runtime_error("could not install " + archive_filename + ": " + (msg ? msg : "unknown error"));
 		}
 
 		// Check rejected file
@@ -295,10 +337,13 @@ void pkg_install(const string& utilname, const string& root, const string& filen
 		}
 	}
 
-	if (i == 0) {
-		if (archive_errno(a) == 0)
-			throw runtime_error("empty package");
-		else
-			throw runtime_error("could not read " + filename);
+	// The loop ends at the end of the archive (ARCHIVE_EOF); anything else is
+	// a corrupt or truncated archive and must not count as a finished install
+	if (r != ARCHIVE_EOF) {
+		const char* msg = archive_error_string(a);
+		throw runtime_error("could not read " + filename + ": " + (msg ? msg : "corrupt archive"));
 	}
+
+	if (i == 0)
+		throw runtime_error("empty package");
 }

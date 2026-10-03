@@ -27,11 +27,11 @@ $ make PKG_EXT=myext                # build with your own package extension
 $ make STATIC=yes                   # fully static binary
 $ make check                        # end-to-end tests (needs root)
 $ make clean                        # keeps the built libraries
-$ make distclean                    # also removes the deps/*/build directories
+$ make distclean                    # also removes the deps/*/cmake-build directories
 
 Pinned versions, all release tags: libarchive v3.8.9, zstd v1.5.7, zlib v1.3.2,
 libsolv 0.7.40 (see 'git submodule status'). To update one, check out the new
-tag inside its deps/ directory, remove its deps/<name>/build directory so it is
+tag inside its deps/ directory, remove its deps/<name>/cmake-build directory so it is
 rebuilt, and commit the new submodule revision.
 Each static archive is only built when it does not exist yet.
 
@@ -50,7 +50,8 @@ tatami [options] <command> [arguments]
   install <pkg|file>...  install packages and their dependencies; installing
                          an installed package upgrades it. "name=version"
                          pins a version, a file argument installs that file
-  remove <package>...    remove packages and everything depending on them
+  remove <package>...    remove packages, what depends on them, and the dependencies
+                         that are no longer needed (always; there is no autoremove)
   upgrade                upgrade all installed packages
   search <regex>         search the repository index (names and descriptions)
   show <package>...      show package details
@@ -65,6 +66,48 @@ Options: -y (no questions), -s (simulate), -f (overwrite conflicting files),
 
 Everything operates below the root given with -r, so a package set can be
 tried out in a scratch directory.
+
+
+Installation reasons and removal
+--------------------------------
+tatami records why each package is installed: "explicit" if you asked for it,
+"dependency" if it was only pulled in to satisfy the dependencies of other
+packages. The reason is stored in the package's metadata below
+/var/lib/tatami/meta and shown by 'tatami show' (a package cannot choose its
+own reason in its .META). Installing an already installed dependency by name
+makes it explicit; upgrades keep the reason. Packages without a recorded reason
+(installed before this was tracked) count as explicit and are never removed
+automatically.
+
+'tatami remove X' always cleans up, so no cruft is left behind: it removes X, the
+packages that depend on X, and every dependency that no explicitly installed
+package needs any more. The orphan calculation is libsolv's own: the explicit
+packages are passed to it as SOLVER_USERINSTALLED and the removal is a
+SOLVER_ERASE with SOLVER_CLEANDEPS. The plan shows each package that goes only
+because it is no longer needed. There is deliberately no separate autoremove
+command. 'tatami -s remove X' shows the result without changing anything.
+
+
+Atomic installation and rollback
+--------------------------------
+A package is installed all or nothing. Every change the extraction makes is
+recorded first: files and directories it creates (including the parent
+directories libarchive makes on the way), files it overwrites (moved aside in
+their own directory, so on the same filesystem), and the mode and owner of
+existing directories it touches. The first error of any kind (a file that
+cannot be written, a full disk, a corrupt or truncated archive, ...) stops the
+extraction, deletes what was created (bottom-up), restores what was
+overwritten, and leaves the package database untouched. The database is
+committed only after the whole package is on disk, and files of an older
+version that the new one no longer contains are deleted only after that, so a
+failed upgrade leaves the old version exactly as it was.
+
+The record is also kept in var/lib/tatami/transaction.journal. If tatami is
+killed or the machine loses power in the middle of an installation, the next
+command that modifies the system undoes it first (or, if the database commit
+had already happened, finishes it) and says so. Rollback is per package: in an
+installation of several packages, those that were completed before the failure
+stay installed.
 
 
 Package format and extension

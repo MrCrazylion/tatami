@@ -200,8 +200,10 @@ void resolver::add_installed(const packages_t& packages, const database& db)
 			meta = *stored;
 		meta.name = i->first;
 		meta.version = i->second.version;
+
+		Id p;
 		try {
-			add_solvable(installed_, meta);
+			p = add_solvable(installed_, meta);
 		} catch (runtime_error& e) {
 			// Unusable stored metadata: keep the package, without its relations
 			cerr << "tatami: warning: " << e.what() << " (ignoring its dependency information)" << endl;
@@ -209,8 +211,13 @@ void resolver::add_installed(const packages_t& packages, const database& db)
 			bare.name = meta.name;
 			bare.version = meta.version;
 			bare.arch = meta.arch;
-			add_solvable(installed_, bare);
+			p = add_solvable(installed_, bare);
 		}
+
+		if (db.reason(i->first) == REASON_DEPENDENCY)
+			dependency_[i->first] = true;
+		else
+			explicit_ids_.push_back(p);
 	}
 	repo_internalize(installed_);
 }
@@ -287,15 +294,22 @@ void resolver::want_install(const string& spec)
 	queue_init(&solvables);
 	selection_solvables(pool_, &sel, &solvables);
 	bool installable = false;
-	for (int i = 0; i < solvables.count; i++)
-		if (pool_installable(pool_, pool_id2solvable(pool_, solvables.elements[i])))
+	set<string> candidates;
+	for (int i = 0; i < solvables.count; i++) {
+		Solvable* cand = pool_id2solvable(pool_, solvables.elements[i]);
+		if (pool_installable(pool_, cand)) {
 			installable = true;
+			candidates.insert(pool_id2str(pool_, cand->name));
+		}
+	}
 	queue_free(&solvables);
 
 	if (!installable) {
 		queue_free(&sel);
 		throw runtime_error("package " + spec + " has no installation candidate (architecture " + arch_ + ")");
 	}
+
+	requested_.insert(candidates.begin(), candidates.end());
 
 	// Installing an installed package upgrades it, unless a version is pinned
 	for (int i = 0; i < sel.count; i += 2) {
@@ -311,6 +325,7 @@ void resolver::want_install_solvable(Id p)
 	if (!pool_installable(pool_, pool_id2solvable(pool_, p)))
 		throw runtime_error("package " + string(pool_id2str(pool_, pool_id2solvable(pool_, p)->name)) +
 				    " has an architecture that cannot be installed on " + arch_);
+	requested_.insert(pool_id2str(pool_, pool_id2solvable(pool_, p)->name));
 	queue_push2(&job_, SOLVER_SOLVABLE | SOLVER_INSTALL, p);
 }
 
@@ -331,7 +346,8 @@ void resolver::want_erase(const string& name)
 	if (!found)
 		throw runtime_error("package " + name + " not installed");
 
-	queue_push2(&job_, SOLVER_SOLVABLE_NAME | SOLVER_ERASE, nameid);
+	queue_push2(&job_, SOLVER_SOLVABLE_NAME | SOLVER_ERASE | SOLVER_CLEANDEPS, nameid);
+	erase_targets_.insert(name);
 	erasing_ = true;
 }
 
@@ -339,6 +355,17 @@ void resolver::want_upgrade_all()
 {
 	prepare();
 	queue_push2(&job_, SOLVER_SOLVABLE_ALL | SOLVER_UPDATE, 0);
+}
+
+// The job queue handed to the solver. When removing, every installed package
+// the user asked for is declared SOLVER_USERINSTALLED: it is the input libsolv
+// needs to tell which dependencies became unneeded (SOLVER_CLEANDEPS).
+void resolver::make_jobs(Queue* jobs) const
+{
+	queue_init_clone(jobs, &job_);
+	if (erasing_)
+		for (size_t i = 0; i < explicit_ids_.size(); i++)
+			queue_push2(jobs, SOLVER_SOLVABLE | SOLVER_USERINSTALLED, explicit_ids_[i]);
 }
 
 void resolver::collect_problems(Solver* solv, vector<string>& out) const
@@ -367,7 +394,9 @@ string resolver::downgrade_hint()
 		solver_set_flag(alt, SOLVER_FLAG_ALLOW_UNINSTALL, 1);
 
 	string hint;
-	if (solver_solve(alt, &job_) == 0) {
+	Queue jobs;
+	make_jobs(&jobs);
+	if (solver_solve(alt, &jobs) == 0) {
 		Transaction* t = solver_create_transaction(alt);
 		const int active = SOLVER_TRANSACTION_SHOW_ACTIVE | SOLVER_TRANSACTION_SHOW_OBSOLETES;
 		for (int i = 0; i < t->steps.count; i++) {
@@ -383,6 +412,7 @@ string resolver::downgrade_hint()
 		}
 		transaction_free(t);
 	}
+	queue_free(&jobs);
 	solver_free(alt);
 
 	if (hint.empty())
@@ -404,7 +434,12 @@ bool resolver::solve()
 	if (erasing_)
 		solver_set_flag(solv_, SOLVER_FLAG_ALLOW_UNINSTALL, 1);
 
-	if (solver_solve(solv_, &job_) != 0) {
+	Queue jobs;
+	make_jobs(&jobs);
+	const int unsolved = solver_solve(solv_, &jobs);
+	queue_free(&jobs);
+
+	if (unsolved != 0) {
 		collect_problems(solv_, problems_);
 		if (problems_.empty())
 			problems_.push_back("the dependency solver found no solution");
@@ -510,6 +545,9 @@ vector<plan_step> resolver::plan() const
 		switch (type) {
 		case SOLVER_TRANSACTION_ERASE:
 			step.kind = plan_step::REMOVE;
+			if (erase_targets_.find(step.name) == erase_targets_.end())
+				step.note = dependency_.find(step.name) != dependency_.end()
+					? "no longer needed" : "depends on a removed package";
 			result.push_back(step);
 			break;
 

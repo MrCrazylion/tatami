@@ -459,6 +459,201 @@ for comp in gz zst xz bz2; do
 	check "tatami indexes a $comp package" 0 "$TATAMI" -r "$T/comp-$comp/root" -c "$T/comp-$comp/conf" update
 done
 
+echo "# install reasons and cascading removal (no autoremove command: remove always cleans up)"
+ROOT_MAIN="$ROOT"; ROOT="$T/root-reasons"; mkdir -p "$ROOT/etc"
+mkpkg cz-base 1.0 file=usr/lib/cz-base
+mkpkg cz-lib 1.0 depends=cz-base file=usr/lib/cz-lib
+mkpkg cz-shared 1.0 file=usr/lib/cz-shared
+mkpkg cz-app1 1.0 "depends=cz-lib, cz-shared" file=usr/bin/cz-app1
+mkpkg cz-app2 1.0 depends=cz-shared file=usr/bin/cz-app2
+mkpkg cz-solo 1.0 file=usr/bin/cz-solo
+check "install two applications that share a dependency" 0 ty install cz-app1 cz-app2
+exists "app1 installed" usr/bin/cz-app1
+exists "dependency installed" usr/lib/cz-lib
+exists "transitive dependency installed" usr/lib/cz-base
+exists "shared dependency installed" usr/lib/cz-shared
+check "show a requested package" 0 t show cz-app1
+has "recorded as manually installed" "^Installed: manually"
+check "show a dependency" 0 t show cz-lib
+has "recorded as a dependency" "^Installed: automatically, as a dependency"
+check "show a transitive dependency" 0 t show cz-base
+has "also a dependency" "^Installed: automatically"
+check "simulated remove shows the orphans" 0 t -s remove cz-app1
+has "orphan listed" "cz-lib \\(1.0-1\\) \\[no longer needed\\]"
+has "transitive orphan listed" "cz-base \\(1.0-1\\) \\[no longer needed\\]"
+hasnt "still-needed dependency not listed" "cz-shared"
+exists "simulation removed nothing" usr/lib/cz-lib
+check "remove app1: its orphaned dependencies go with it" 0 ty remove cz-app1
+has "app1 removed" "Removing cz-app1"
+has "orphan removed" "Removing cz-lib"
+has "transitive orphan removed" "Removing cz-base"
+hasnt "a dependency still needed by app2 is kept" "Removing cz-shared"
+absent "app1 files gone" usr/bin/cz-app1
+absent "orphan files gone" usr/lib/cz-lib
+absent "transitive orphan files gone" usr/lib/cz-base
+exists "shared dependency kept" usr/lib/cz-shared
+exists "app2 untouched" usr/bin/cz-app2
+check "remove the last user of the shared dependency" 0 ty remove cz-app2
+has "shared dependency removed with it" "Removing cz-shared"
+absent "shared dependency files gone" usr/lib/cz-shared
+check "nothing is left installed" 0 t list
+hasnt "no cz- package remains" "^cz-"
+
+# an explicit install protects a package
+check "install app1 again" 0 ty install cz-app1
+check "asking for an installed dependency explicitly" 0 ty install cz-lib
+has "it is now manual" "cz-lib is now marked as manually installed"
+check "show: now manual" 0 t show cz-lib
+has "recorded as manual" "^Installed: manually"
+check "remove app1: the explicit package and what it needs stay" 0 ty remove cz-app1
+exists "explicitly installed package kept" usr/lib/cz-lib
+exists "its own dependency kept" usr/lib/cz-base
+absent "app1 gone" usr/bin/cz-app1
+absent "the other orphan is removed" usr/lib/cz-shared
+
+# explicit packages are never swept, even when nothing needs them
+check "install a standalone package and an app" 0 ty install cz-solo cz-app2
+check "remove the app" 0 ty remove cz-app2
+exists "standalone explicit package kept" usr/bin/cz-solo
+absent "app's dependency removed" usr/lib/cz-shared
+
+# packages of unknown origin (installed before reasons were tracked) count as explicit
+check "install app2 again" 0 ty install cz-app2
+sed -i '/^reason:/d' "$ROOT/var/lib/tatami/meta/cz-shared"
+check "remove app2" 0 ty remove cz-app2
+exists "a package without a recorded reason is kept" usr/lib/cz-shared
+check "its status reads as manual" 0 t show cz-shared
+has "unknown reason means manual" "^Installed: manually"
+check "removing a dependency removes its dependents too" 0 ty remove cz-lib
+absent "dependency removed" usr/lib/cz-lib
+absent "and its orphan" usr/lib/cz-base
+ROOT="$ROOT_MAIN"
+
+echo "# atomic installation: a failure halfway rolls everything back"
+ROOT="$T/root-atomic"; mkdir -p "$ROOT/etc" "$ROOT/usr/share"
+python3 - "$T" "$EXT" <<'PY'
+import tarfile, io, sys
+t, ext = sys.argv[1], sys.argv[2]
+def add(tf, name, data=None, typ=tarfile.REGTYPE, mode=0o644, link=""):
+    i = tarfile.TarInfo(name); i.type = typ; i.mode = mode; i.linkname = link
+    if typ == tarfile.REGTYPE:
+        i.size = len(data); tf.addfile(i, io.BytesIO(data))
+    else:
+        tf.addfile(i)
+def pkg(path, name, version, files, broken):
+    with tarfile.open(path, "w:gz") as tf:
+        add(tf, ".META", ("name: %s\nversion: %s\n" % (name, version)).encode())
+        for n, kind, mode, data in files:
+            if kind == "d": add(tf, n, typ=tarfile.DIRTYPE, mode=mode)
+            else: add(tf, n, data, mode=mode)
+        # a hard link to a file that is not in the archive: only fails when it is extracted,
+        # after everything before it was already written
+        if broken: add(tf, "usr/share/%s/zlast" % name, typ=tarfile.LNKTYPE, link="no/such/target")
+fresh = [("usr/share/rbfresh/", "d", 0o755, None), ("usr/share/rbfresh/a", "f", 0o644, b"a\n"),
+         ("usr/share/rbfresh/sub/", "d", 0o755, None), ("usr/share/rbfresh/sub/b", "f", 0o644, b"b\n")]
+pkg(t + "/rbfresh_1." + ext, "rbfresh", "1", fresh, True)
+v1 = [("usr/share/rbup/", "d", 0o755, None), ("usr/share/rbup/data", "f", 0o640, b"version one\n"),
+      ("usr/share/rbup/oldonly", "f", 0o644, b"old\n")]
+v2 = [("usr/share/rbup/", "d", 0o700, None), ("usr/share/rbup/data", "f", 0o600, b"version TWO\n"),
+      ("usr/share/rbup/newfile", "f", 0o644, b"new\n")]
+pkg(t + "/rbup_1." + ext, "rbup", "1", v1, False)
+pkg(t + "/rbup_2." + ext, "rbup", "2", v2, True)
+pkg(t + "/rbup_3." + ext, "rbup", "3", v2, False)
+PY
+has_data() { [ "$(cat "$ROOT/usr/share/rbup/data" 2>/dev/null)" = "$1" ]; }
+# everything observable about the tree except timestamps: paths, types, modes, owners, link targets, contents
+snap() { (cd "$ROOT" && find . -printf '%p %y %m %u:%g %l\n' | sort; find . -type f -exec md5sum {} + 2>/dev/null | sort); }
+
+# the first run on a new root creates tatami's own state directory (database, index);
+# do that first so the comparison below is about the extraction only
+check "install version 1 of a package" 0 ty install "$T/rbup_1.$EXT"
+has_data "version one" && ok "version 1 is in place" || bad "version 1 content"
+
+before=$(snap)
+check "a fresh installation that fails halfway is refused" 1 ty install "$T/rbfresh_1.$EXT"
+has "the failing member is named" "could not install usr/share/rbfresh/zlast"
+has "the user is told nothing changed" "nothing was changed"
+after=$(snap)
+[ "$before" = "$after" ] && ok "the filesystem is exactly as before (every path, mode, owner and content)" || bad "the filesystem changed" "$(diff <(echo "$before") <(echo "$after") | head -8)"
+absent "extracted file removed" usr/share/rbfresh/a
+absent "created subdirectory removed" usr/share/rbfresh/sub
+absent "created directory removed" usr/share/rbfresh
+absent "no journal left" var/lib/tatami/transaction.journal
+check "the database does not know the package" 1 t files rbfresh
+
+before=$(snap)
+check "an upgrade that fails halfway is refused" 1 ty install "$T/rbup_2.$EXT"
+has "nothing was changed" "nothing was changed"
+after=$(snap)
+[ "$before" = "$after" ] && ok "the upgrade left the filesystem exactly as before" || bad "the failed upgrade changed the filesystem" "$(diff <(echo "$before") <(echo "$after") | head -8)"
+has_data "version one" && ok "the overwritten file has its old content again" || bad "old content not restored"
+[ "$(stat -c %a "$ROOT/usr/share/rbup/data")" = 640 ] && ok "and its old mode (640)" || bad "mode of the overwritten file"
+[ "$(stat -c %a "$ROOT/usr/share/rbup")" = 755 ] && ok "the existing directory has its old mode (755) again" || bad "directory mode not restored"
+exists "the file only the old version has is still there" usr/share/rbup/oldonly
+absent "the new version's file was removed" usr/share/rbup/newfile
+check "the database still has version 1" 0 t list
+has "version 1 is registered" "^rbup/1 \\[installed\\]"
+[ "$(find "$ROOT" -name '.tatami-bak*' | wc -l)" = 0 ] && ok "no backup files are left behind" || bad "backup files left" "$(find "$ROOT" -name '.tatami-bak*')"
+absent "no journal left after the rollback" var/lib/tatami/transaction.journal
+
+check "the same upgrade without the broken member succeeds" 0 ty install "$T/rbup_3.$EXT"
+has_data "version TWO" && ok "new content installed" || bad "new content missing"
+exists "new file installed" usr/share/rbup/newfile
+absent "file the new version no longer has is deleted afterwards" usr/share/rbup/oldonly
+[ "$(find "$ROOT" -name '.tatami-bak*' | wc -l)" = 0 ] && ok "backups are cleaned up after a successful upgrade" || bad "backups left after success"
+absent "no journal left after success" var/lib/tatami/transaction.journal
+check "the database has version 3" 0 t list
+has "version 3 is registered" "^rbup/3 \\[installed\\]"
+
+echo "# a symbolic link to a directory (/lib -> usr/lib) stays a link"
+mkdir -p "$ROOT/usr/lib"; ln -s usr/lib "$ROOT/lib"
+python3 - "$T" "$EXT" <<'PY'
+import tarfile, io, sys
+t, ext = sys.argv[1], sys.argv[2]
+def add(tf, name, data=None, typ=tarfile.REGTYPE, mode=0o644, link=""):
+    i = tarfile.TarInfo(name); i.type = typ; i.mode = mode; i.linkname = link
+    if typ == tarfile.REGTYPE:
+        i.size = len(data); tf.addfile(i, io.BytesIO(data))
+    else:
+        tf.addfile(i)
+for name, broken in (("lnkok", False), ("lnkbad", True)):
+    with tarfile.open("%s/%s_1.%s" % (t, name, ext), "w:gz") as tf:
+        add(tf, ".META", ("name: %s\nversion: 1\n" % name).encode())
+        add(tf, "lib/", typ=tarfile.DIRTYPE, mode=0o755)
+        add(tf, "lib/%s.so" % name, b"lib\n")
+        if broken: add(tf, "usr/lib/zlast", typ=tarfile.LNKTYPE, link="no/such/target")
+PY
+before=$(snap)
+check "a failing install that writes through the link is refused" 1 ty install "$T/lnkbad_1.$EXT"
+after=$(snap)
+[ "$before" = "$after" ] && ok "rolled back with the link and its directory untouched" || bad "link or directory changed" "$(diff <(echo "$before") <(echo "$after") | head -6)"
+[ -L "$ROOT/lib" ] && ok "/lib is still a symbolic link after the rollback" || bad "/lib is no longer a link"
+check "a package shipping lib/ installs through the link" 0 ty install "$T/lnkok_1.$EXT"
+[ -L "$ROOT/lib" ] && ok "/lib is still a symbolic link after the install" || bad "install replaced the link by a directory"
+[ "$(readlink "$ROOT/lib")" = "usr/lib" ] && ok "pointing where it did" || bad "link target changed" "$(readlink "$ROOT/lib")"
+exists "the file went through the link into usr/lib" usr/lib/lnkok.so
+
+echo "# an installation interrupted by a crash is recovered the next time tatami runs"
+D="$ROOT/usr/share/crash"; mkdir -p "$D"
+echo partial > "$D/old"; echo orig > "$D/.tatami-bak.1.0"; echo junk > "$D/new"
+printf 'P\tcrash\t1\nC\t%s\nB\t%s\t%s\n' "$D/new" "$D/old" "$D/.tatami-bak.1.0" > "$ROOT/var/lib/tatami/transaction.journal"
+OUT=$(ty remove nothing-here 2>&1)
+has "an unfinished installation is rolled back" "rolled back an interrupted installation of crash 1"
+[ "$(cat "$D/old")" = orig ] && ok "the overwritten file is restored" || bad "file not restored" "$(cat "$D/old")"
+[ ! -e "$D/new" ] && [ ! -e "$D/.tatami-bak.1.0" ] && ok "the new file and the backup are gone" || bad "recovery left files" "$(ls -a "$D")"
+absent "journal removed after recovery" var/lib/tatami/transaction.journal
+rm -rf "$D"
+# the database already lists rbup 3: the interrupted run had committed, recovery finishes the job
+echo stale > "$ROOT/usr/share/rbup/stale"; echo bak > "$ROOT/usr/share/rbup/.tatami-bak.2.0"
+printf 'P\trbup\t3\nD\t%s\nB\t%s\t%s\n' "$ROOT/usr/share/rbup/stale" "$ROOT/usr/share/rbup/data" "$ROOT/usr/share/rbup/.tatami-bak.2.0" > "$ROOT/var/lib/tatami/transaction.journal"
+OUT=$(ty remove nothing-here 2>&1)
+has "a committed installation is finished" "finished an interrupted installation of rbup 3"
+absent "deferred deletion carried out" usr/share/rbup/stale
+absent "backup dropped" usr/share/rbup/.tatami-bak.2.0
+has_data "version TWO" && ok "the committed content is kept" || bad "committed content lost"
+absent "journal removed" var/lib/tatami/transaction.journal
+ROOT="$ROOT_MAIN"
+
 echo "# file names: <name>_<version>.<ext>"
 mkpkg libfoo-dev 2.0 "depends=libfoo >= 1.0" file=usr/include/foo.h
 [ -f "$REPO/libfoo-dev_2.0-1.$EXT" ] && ok "name with a hyphen: libfoo-dev_2.0-1.$EXT" || bad "hyphenated package file name" "$(ls "$REPO")"

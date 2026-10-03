@@ -43,7 +43,20 @@ public:
 	bool has(const string& name) const { return packages_.find(name) != packages_.end(); }
 	const pkgmeta* meta(const string& name) const;
 
-	void add_pkg(const string& name, const pkgrecord& rec, const pkgmeta& meta);
+	// 'reason' is REASON_EXPLICIT or REASON_DEPENDENCY
+	void add_pkg(const string& name, const pkgrecord& rec, const pkgmeta& meta, const string& reason);
+
+	// Install reason of an installed package; unknown means explicit
+	string reason(const string& name) const;
+	void set_reason(const string& name, const string& reason);
+
+	// Files of the installed version of 'name' that the new file set no longer
+	// contains and no other package owns: they are deleted after an upgrade
+	set<string> stale_files(const string& name, const set<string>& new_files) const;
+
+	// Drops the given files from the file lists of all packages (database
+	// only, nothing is deleted from disk)
+	void unreference(const set<string>& files);
 
 	// Removes a package from the database and deletes its files, except files
 	// in keep_list and files still owned by another package.
