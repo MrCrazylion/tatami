@@ -2,3 +2,12 @@
 	path = deps/libsolv
 	url = https://github.com/openSUSE/libsolv.git
 	ignore = untracked
+[submodule "deps/zlib"]
+	path = deps/zlib
+	url = https://github.com/madler/zlib.git
+[submodule "deps/zstd"]
+	path = deps/zstd
+	url = https://github.com/facebook/zstd.git
+[submodule "deps/libarchive"]
+	path = deps/libarchive
+	url = https://github.com/libarchive/libarchive.git
