@@ -14,3 +14,14 @@
 	path = deps/libarchive
 	url = https://github.com/libarchive/libarchive.git
 	ignore = untracked
+[submodule "deps/xz"]
+	path = deps/xz
+	url = https://github.com/tukaani-project/xz.git
+	ignore = untracked
+[submodule "deps/lz4"]
+	path = deps/lz4
+	url = https://github.com/lz4/lz4.git
+	ignore = untracked
+[submodule "deps/bzip2"]
+	path = deps/bzip2
+	url = https://gitlab.com/bzip2/bzip2.git
