@@ -2,8 +2,10 @@
 #include "pkgarchive.h"
 #include "txn.h"
 #include "paths.h"
+#include "rootfs.h"
 #include "util.h"
 #include <iostream>
+#include <sys/stat.h>
 #include <iterator>
 #include <algorithm>
 #include <sys/wait.h>
@@ -18,7 +20,7 @@ static void free_regex(regex_t* re)
 }
 
 engine::engine(const config_t& cfg, database& db, bool force)
-	: db_(db), force_(force)
+	: db_(db), force_(force), hooks_(db.root())
 {
 	for (vector<rule_t>::const_iterator i = cfg.rules.begin(); i != cfg.rules.end(); ++i) {
 		compiled_rule rule;
@@ -115,7 +117,7 @@ void engine::install(const string& filename, bool requested)
 	// once everything else succeeded
 	set<string> stale = db_.stale_files(name, rec.files);
 
-	txn tx(db_.root());
+	txn tx(db_.path(JOURNAL_FILE));
 	tx.begin(name, rec.version);
 
 	try {
@@ -126,8 +128,14 @@ void engine::install(const string& filename, bool requested)
 		if (!conflicting_files.empty())
 			db_.unreference(conflicting_files);
 
-		for (set<string>::const_iterator i = stale.begin(); i != stale.end(); ++i)
-			tx.defer_delete(db_.root() + *i);
+		for (set<string>::const_iterator i = stale.begin(); i != stale.end(); ++i) {
+			const string path = db_.path(*i);
+			struct stat st;
+			// a directory entry that is a symbolic link here is the base system's, not ours
+			if ((*i)[i->length() - 1] == '/' && lstat(path.c_str(), &st) == 0 && S_ISLNK(st.st_mode))
+				continue;
+			tx.defer_delete(path);
+		}
 
 		db_.add_pkg(name, rec, package.meta, reason);
 		db_.commit();
@@ -138,6 +146,22 @@ void engine::install(const string& filename, bool requested)
 	}
 
 	tx.commit();
+
+	// What this installation changed on the system: the new files and the old
+	// version's files that are gone
+	set<string> changed = rec.files;
+	changed.insert(stale.begin(), stale.end());
+	hooks_.record(installed ? "upgrade" : "install", changed);
+}
+
+void engine::check_hooks()
+{
+	hooks_.load();
+}
+
+int engine::run_hooks()
+{
+	return hooks_.run();
 }
 
 void engine::mark_explicit(const string& name)
@@ -153,27 +177,10 @@ void engine::remove(const string& name)
 	if (!db_.has(name))
 		throw runtime_error("package " + name + " not installed");
 
+	const set<string> files = db_.packages().find(name)->second.files;
+
 	db_.rm_pkg(name);
 	db_.commit();
-}
 
-void engine::ldconfig() const
-{
-	// Only execute ldconfig if /etc/ld.so.conf exists
-	if (!file_exists(db_.root() + LDCONFIG_CONF) || access(LDCONFIG, X_OK) != 0)
-		return;
-
-	pid_t pid = fork();
-
-	if (pid == -1)
-		throw runtime_error_with_errno("fork() failed");
-
-	if (pid == 0) {
-		execl(LDCONFIG, LDCONFIG, "-r", db_.root().c_str(), (char*)0);
-		cerr << UTILNAME << ": could not execute " << LDCONFIG << ": " << strerror(errno) << endl;
-		_exit(EXIT_FAILURE);
-	}
-
-	if (waitpid(pid, 0, 0) == -1)
-		throw runtime_error_with_errno("waitpid() failed");
+	hooks_.record("remove", files);
 }

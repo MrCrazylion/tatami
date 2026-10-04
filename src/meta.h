@@ -44,6 +44,5 @@ string format_meta(const pkgmeta& meta);
 // Throws runtime_error if name or version are missing or malformed.
 void validate_meta(const pkgmeta& meta);
 
-vector<pkgmeta> read_index(const string& filename);
 
 #endif /* META_H */

@@ -1,6 +1,7 @@
 #include "pkgarchive.h"
 #include "util.h"
 #include "paths.h"
+#include "rootfs.h"
 #include <iostream>
 #include <memory>
 #include <vector>
@@ -29,6 +30,8 @@ archive_ptr open_archive(const string& filename)
 	archive_read_support_filter_xz(a);
 	archive_read_support_filter_lzip(a);
 	archive_read_support_filter_zstd(a);
+	archive_read_support_filter_lz4(a);
+	archive_read_support_filter_lzma(a);
 	archive_read_support_format_tar(a);
 
 	if (archive_read_open_filename(a, filename.c_str(), DEFAULT_BYTES_PER_BLOCK) != ARCHIVE_OK)
@@ -65,42 +68,13 @@ string normalize(const string& path, bool is_dir)
 	if (p.empty())
 		return "";
 
-	if (p == PKG_DIR || starts_with(p, PKG_DIR "/"))
+	if (p == DB_DIR || starts_with(p, DB_DIR "/") || p == STATE_DIR || starts_with(p, STATE_DIR "/"))
 		throw runtime_error("refusing path inside the package database: '" + path + "'");
 
 	if (is_dir)
 		p += '/';
 
 	return p;
-}
-
-// True if 'path' (below absroot) can be written without leaving the root
-// through a symbolic link.
-bool inside_root(const string& absroot, const string& path)
-{
-	if (absroot.empty())
-		return true;	// the real root: nothing to escape from
-
-	string cur = absroot;
-	vector<string> parts = split(path.substr(absroot.size()), "/");
-
-	// All components except the last one are directories we write through
-	for (size_t i = 0; i + 1 < parts.size(); i++) {
-		cur += "/" + parts[i];
-		struct stat st;
-		if (lstat(cur.c_str(), &st) == -1)
-			return errno == ENOENT || errno == ENOTDIR;
-		if (S_ISLNK(st.st_mode)) {
-			char buf[PATH_MAX];
-			if (!realpath(cur.c_str(), buf))
-				return false;
-			cur = buf;
-			if (cur != absroot && !starts_with(cur, absroot + "/"))
-				return false;
-		}
-	}
-
-	return true;
 }
 
 string read_entry_data(struct archive* a, const string& filename)
@@ -260,15 +234,15 @@ void pkg_install(const string& utilname, const string& root, const string& filen
 	unsigned int i = 0;
 	int r;
 
-	if (chdir(root.c_str()) == -1)
-		throw runtime_error_with_errno("could not change directory to " + root);
-
 	// Absolute root without trailing slash ("" for "/")
 	string absroot = root;
 	while (!absroot.empty() && absroot[absroot.size() - 1] == '/')
 		absroot.erase(absroot.size() - 1);
 
-	const string reject_dir = trim_filename(absroot + "/" + PKG_REJECTED);
+	// Every destination is worked out with root_resolve(): symbolic links in the
+	// root (a usr-merged /lib -> usr/lib, even an absolute one) are followed
+	// inside the root, never to the host, so nothing is written outside of it.
+	// The extraction itself then only sees paths without links in their parents.
 
 	for (; (r = archive_read_next_header(a, &entry)) == ARCHIVE_OK || r == ARCHIVE_WARN; ++i) {
 		mode_t mode = archive_entry_mode(entry);
@@ -282,7 +256,7 @@ void pkg_install(const string& utilname, const string& root, const string& filen
 			continue;
 		}
 
-		const string original_filename = trim_filename(absroot + "/" + archive_filename);
+		const string original_filename = root_resolve(absroot, archive_filename);
 		string real_filename = original_filename;
 
 		// Check if file is filtered out via INSTALL rules
@@ -294,21 +268,18 @@ void pkg_install(const string& utilname, const string& root, const string& filen
 		}
 
 		// Check if file should be rejected
+		const string reject_dir = root_resolve(absroot, PKG_REJECTED);
 		if (file_exists(real_filename) && keep_list.find(archive_filename) != keep_list.end())
-			real_filename = trim_filename(reject_dir + "/" + archive_filename);
-
-		if (!inside_root(absroot, real_filename))
-			throw runtime_error("refusing to install " + archive_filename +
-					    ": it would be written outside of the installation root through a symbolic link");
+			real_filename = root_resolve(absroot, string(PKG_REJECTED) + "/" + archive_filename);
 
 		prepare_target(tx, absroot, real_filename, mode);
 
 		archive_entry_set_pathname(entry, real_filename.c_str());
 
-		// Hard links are resolved relative to the working directory (the root)
+		// Hard link targets are paths inside the root too
 		const char* hardlink = archive_entry_hardlink(entry);
 		if (hardlink)
-			archive_entry_set_hardlink(entry, normalize(hardlink, false).c_str());
+			archive_entry_set_hardlink(entry, root_resolve(absroot, normalize(hardlink, false)).c_str());
 
 		// Extract file
 		int flags = ARCHIVE_EXTRACT_OWNER | ARCHIVE_EXTRACT_PERM |

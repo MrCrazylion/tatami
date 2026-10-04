@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <climits>
+#include <cctype>
 #include <sys/stat.h>
 #include <sys/param.h>
 #include <unistd.h>
@@ -63,23 +64,66 @@ string itos(unsigned long long value)
 	return to_string(value);
 }
 
-bool split_package_filename(const string& filename, const string& ext,
-			    string& name, string& version)
+vector<string> package_extensions(const string& configured)
+{
+	vector<string> exts;
+
+	if (!configured.empty()) {
+		exts.push_back(configured);
+	} else {
+		const char* comps[] = { "zst", "xz", "gz", "bz2", "lz4", "lzma" };
+		for (size_t i = 0; i < sizeof(comps) / sizeof(comps[0]); i++)
+			exts.push_back(string("tar.") + comps[i]);
+	}
+
+	return exts;
+}
+
+// Length of the extension the file name ends in, 0 if none matches
+static size_t extension_length(const string& base, const vector<string>& exts)
+{
+	for (size_t i = 0; i < exts.size(); i++) {
+		const string suffix = "." + exts[i];
+		if (base.size() > suffix.size() && ends_with(base, suffix))
+			return suffix.size();
+	}
+	return 0;
+}
+
+bool has_package_extension(const string& filename, const vector<string>& exts)
+{
+	return extension_length(filename, exts) != 0;
+}
+
+bool split_package_filename(const string& filename, const vector<string>& exts,
+			    string& name, string& version, string& arch)
 {
 	string base = filename.substr(filename.rfind('/') == string::npos ? 0 : filename.rfind('/') + 1);
-	const string suffix = "." + ext;
 
-	if (!ends_with(base, suffix))
+	const size_t ext = extension_length(base, exts);
+	if (!ext)
 		return false;
-	base.erase(base.size() - suffix.size());
+	base.erase(base.size() - ext);
 
-	string::size_type sep = base.rfind('_');
-	if (sep == string::npos || sep == 0 || sep + 1 == base.size())
+	const string::size_type first = base.find('_');
+	if (first == string::npos || first == 0)
+		return false;
+	const string::size_type second = base.find('_', first + 1);
+	if (second == string::npos || second == first + 1 || second + 1 == base.size())
 		return false;
 
-	name = base.substr(0, sep);
-	version = base.substr(sep + 1);
+	name = base.substr(0, first);
+	version = base.substr(first + 1, second - first - 1);
+	arch = base.substr(second + 1);
 	return true;
+}
+
+string canonical_arch(const string& arch)
+{
+	string a = trim(arch);
+	for (string::size_type i = 0; i < a.size(); i++)
+		a[i] = tolower((unsigned char)a[i]);
+	return (a == "noarch" || a == "all" || a == "any") ? "noarch" : trim(arch);
 }
 
 bool file_exists(const string& filename)

@@ -39,6 +39,8 @@ public:
 	void commit();
 
 	const string& root() const { return root_; }
+	// Absolute host path of 'rel' (relative to the root), confined to the root
+	string path(const string& rel) const;
 	const packages_t& packages() const { return packages_; }
 	bool has(const string& name) const { return packages_.find(name) != packages_.end(); }
 	const pkgmeta* meta(const string& name) const;

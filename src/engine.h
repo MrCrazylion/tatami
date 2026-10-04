@@ -3,6 +3,7 @@
 
 #include "config.h"
 #include "db.h"
+#include "hooks.h"
 #include <regex.h>
 #include <memory>
 #include <set>
@@ -29,10 +30,16 @@ public:
 	void install(const string& filename, bool requested);
 	void remove(const string& name);
 
+	// Checks the hook files; call before changing anything
+	void check_hooks();
+
+	// Runs the hooks the changes made so far trigger (see hooks.h). Call it once,
+	// after the whole transaction was committed. Returns the number that failed.
+	int run_hooks();
+
 	// Marks an installed package as explicitly installed (it is no longer
 	// removed automatically when nothing depends on it)
 	void mark_explicit(const string& name);
-	void ldconfig() const;
 
 private:
 	struct compiled_rule {
@@ -47,6 +54,7 @@ private:
 
 	database& db_;
 	bool force_;
+	hook_runner hooks_;
 	vector<compiled_rule> rules_;
 };
 

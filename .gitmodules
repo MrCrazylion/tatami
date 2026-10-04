@@ -25,3 +25,4 @@
 [submodule "deps/bzip2"]
 	path = deps/bzip2
 	url = https://gitlab.com/bzip2/bzip2.git
+	ignore = untracked

@@ -4,8 +4,10 @@
 //
 
 #include "bulkhead.h"
+#include "pack.h"
 #include "commands.h"
 #include "config.h"
+#include "rootfs.h"
 #include "util.h"
 #include <iostream>
 #include <cstdlib>
@@ -32,6 +34,9 @@ static void print_help()
 	cout << "  ";
 	cout.width(24);
 	cout << left << "bulkhead <dir> -- <cmd>" << "run a command in a bwrap sandbox (used by tatamk)" << endl;
+	cout << "  ";
+	cout.width(24);
+	cout << left << "pack <meta> <dir> <out>" << "create a package archive (used by tatamk), -z <compression>" << endl;
 	cout << endl
 	     << "options:" << endl
 	     << "  -y, --yes            do not ask for confirmation" << endl
@@ -59,6 +64,8 @@ int main(int argc, char** argv)
 	// of the sandboxed command is passed through unchanged.
 	if (argc >= 2 && string(argv[1]) == "bulkhead")
 		return bulkhead_main(argc, argv);
+	if (argc >= 2 && string(argv[1]) == "pack")
+		return pack_main(argc, argv);
 
 	try {
 		context ctx;
@@ -123,7 +130,7 @@ int main(int argc, char** argv)
 
 		const bool explicit_config = !ctx.opt.config.empty();
 		ctx.cfg = read_config(explicit_config ? ctx.opt.config
-						      : trim_filename(ctx.opt.root + "/" + TATAMI_CONF),
+						      : root_resolve(ctx.opt.root, TATAMI_CONF),
 				      explicit_config);
 
 		ctx.arch = ctx.cfg.arch;

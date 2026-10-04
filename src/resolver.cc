@@ -1,6 +1,7 @@
 #include "resolver.h"
 #include "util.h"
 #include <cstring>
+#include <unistd.h>
 #include <cctype>
 #include <iostream>
 #include <cstdio>
@@ -14,6 +15,8 @@ extern "C" {
 #include <solv/solverdebug.h>
 #include <solv/evr.h>
 #include <solv/knownid.h>
+#include <solv/repo_solv.h>
+#include <solv/repo_write.h>
 }
 
 // The architecture a package is solved with. Architecture-independent
@@ -35,17 +38,17 @@ static string effective_arch(const string& arch, const string& host, bool instal
 }
 
 resolver::resolver(const string& arch)
-	: installed_(0), available_(0), local_(0), solv_(0), trans_(0), arch_(arch), ready_(false), erasing_(false)
+	: installed_(0), local_(0), solv_(0), trans_(0), arch_(arch), ready_(false), erasing_(false)
 {
 	pool_ = pool_create();
-	pool_setarch(pool_, arch_.c_str());
+	// Strict: the listed architectures and noarch, nothing else
+	pool_setarchpolicy(pool_, arch_.c_str());
 	// "replaces" is matched against everything a package provides (virtual
 	// provides included), not only against package names.
 	pool_set_flag(pool_, POOL_FLAG_OBSOLETEUSESPROVIDES, 1);
 	queue_init(&job_);
 
 	installed_ = repo_create(pool_, "@installed");
-	available_ = repo_create(pool_, "available");
 	local_ = repo_create(pool_, "commandline");
 	pool_set_installed(pool_, installed_);
 }
@@ -162,7 +165,7 @@ Id resolver::add_solvable(Repo* repo, const pkgmeta& meta)
 	Id p = repo_add_solvable(repo);
 	Solvable* s = pool_id2solvable(pool_, p);
 
-	const string arch = effective_arch(meta.arch, arch_, repo == installed_);
+	const string arch = effective_arch(meta.arch, arch_.substr(0, arch_.find_first_of(":=>")), repo == installed_);
 
 	s->name = pool_str2id(pool_, meta.name.c_str(), 1);
 	s->evr = pool_str2id(pool_, meta.version.c_str(), 1);
@@ -185,6 +188,8 @@ Id resolver::add_solvable(Repo* repo, const pkgmeta& meta)
 		repo_set_str(repo, p, SOLVABLE_SUMMARY, meta.description.c_str());
 	if (!meta.filename.empty())
 		repo_set_str(repo, p, SOLVABLE_MEDIAFILE, meta.filename.c_str());
+	if (meta.size)
+		repo_set_num(repo, p, SOLVABLE_DOWNLOADSIZE, meta.size);
 
 	ready_ = false;
 	return p;
@@ -222,16 +227,124 @@ void resolver::add_installed(const packages_t& packages, const database& db)
 	repo_internalize(installed_);
 }
 
-void resolver::add_available(const vector<pkgmeta>& entries)
+Repo* resolver::new_repo(const string& dir)
 {
+	Repo* repo = repo_create(pool_, dir.c_str());
+	// The first repository listed is the preferred one
+	repo->priority = 1000 - (int)repos_.size();
+	repos_.push_back(repo);
+	repo_dir_[repo] = dir;
+	ready_ = false;
+	return repo;
+}
+
+void resolver::add_repo(const string& dir, const vector<pkgmeta>& entries)
+{
+	Repo* repo = new_repo(dir);
+
 	for (vector<pkgmeta>::const_iterator i = entries.begin(); i != entries.end(); ++i) {
 		try {
-			add_solvable(available_, *i);
+			// file names are kept relative to the repository, like in repo.solv
+			pkgmeta m = *i;
+			m.filename = m.filename.substr(m.filename.rfind('/') + 1);
+			add_solvable(repo, m);
 		} catch (runtime_error& e) {
 			cerr << "tatami: warning: ignoring " << e.what() << endl;
 		}
 	}
-	repo_internalize(available_);
+	repo_internalize(repo);
+}
+
+void resolver::add_repo_solv(const string& dir, const string& solv_file)
+{
+	FILE* fp = fopen(solv_file.c_str(), "r");
+	if (!fp)
+		throw runtime_error_with_errno("could not open " + solv_file);
+
+	Repo* repo = new_repo(dir);
+	const int r = repo_add_solv(repo, fp, 0);
+	fclose(fp);
+	if (r != 0)
+		throw runtime_error(solv_file + " is not a valid index (" + pool_errstr(pool_) + "); run 'tatami index " + dir + "'");
+}
+
+void resolver::write_solv(const string& dir, const vector<pkgmeta>& entries, const string& solv_file)
+{
+	resolver r("noarch");           // the file holds every architecture: nothing is filtered here
+	r.add_repo(dir, entries);
+
+	FILE* fp = fopen(solv_file.c_str(), "w");
+	if (!fp)
+		throw runtime_error_with_errno("could not create " + solv_file);
+	if (repo_write(r.repos_[0], fp) != 0 || fflush(fp) == EOF || fsync(fileno(fp)) == -1) {
+		const int e = errno;
+		fclose(fp);
+		throw runtime_error_with_errno("could not write " + solv_file, e);
+	}
+	if (fclose(fp) == EOF)
+		throw runtime_error_with_errno("could not write " + solv_file);
+}
+
+// The file of a solvable: relative to its repository, absolute for a package
+// file given on the command line
+string resolver::solvable_file(Id p) const
+{
+	Solvable* s = pool_id2solvable(pool_, p);
+	const char* f = solvable_lookup_str(s, SOLVABLE_MEDIAFILE);
+	if (!f)
+		return "";
+	if (f[0] == '/')
+		return f;
+
+	map<Repo*, string>::const_iterator d = repo_dir_.find(s->repo);
+	return d == repo_dir_.end() ? string(f) : d->second + "/" + f;
+}
+
+vector<pkgmeta> resolver::available_meta() const
+{
+	vector<pkgmeta> result;
+
+	for (size_t r = 0; r < repos_.size(); r++) {
+		Id p;
+		Solvable* s;
+		FOR_REPO_SOLVABLES(repos_[r], p, s) {
+			pkgmeta m;
+			m.name = pool_id2str(pool_, s->name);
+			m.version = pool_id2str(pool_, s->evr);
+			m.arch = pool_id2str(pool_, s->arch);
+			const char* summary = solvable_lookup_str(s, SOLVABLE_SUMMARY);
+			if (summary)
+				m.description = summary;
+			m.filename = solvable_file(p);
+			m.size = solvable_lookup_num(s, SOLVABLE_DOWNLOADSIZE, 0);
+
+			// the relations, as the text they were written as ("a >= 1", "a | b");
+			// the implicit "provides itself" is not shown
+			const string self = m.name + " = " + m.version;
+			struct { Offset off; string* out; bool provides; } lists[] = {
+				{ s->requires, &m.depends, false },
+				{ s->conflicts, &m.conflicts, false },
+				{ s->provides, &m.provides, true },
+				{ s->obsoletes, &m.replaces, false },
+			};
+			for (size_t l = 0; l < sizeof(lists) / sizeof(lists[0]); l++) {
+				if (!lists[l].off)
+					continue;
+				Id id, *ids = repos_[r]->idarraydata + lists[l].off;
+				while ((id = *ids++) != 0) {
+					if (id == SOLVABLE_PREREQMARKER || id == SOLVABLE_FILEMARKER)
+						continue;
+					const string text = pool_dep2str(pool_, id);
+					if (lists[l].provides && text == self)
+						continue;
+					*lists[l].out += (lists[l].out->empty() ? "" : ", ") + text;
+				}
+			}
+			result.push_back(m);
+		}
+	}
+
+	return result;
 }
 
 Id resolver::add_local(const pkgmeta& meta)
@@ -272,10 +385,10 @@ void resolver::want_install(const string& spec)
 		const string wanted = trim(spec.substr(0, spec.find('=')));
 		Id nameid = pool_str2id(pool_, wanted.c_str(), 0);
 		string archs;
-		if (nameid) {
+		for (size_t r = 0; nameid && r < repos_.size(); r++) {
 			Id p;
 			Solvable* s;
-			FOR_REPO_SOLVABLES(available_, p, s) {
+			FOR_REPO_SOLVABLES(repos_[r], p, s) {
 				if (s->name != nameid)
 					continue;
 				const string a = pool_id2str(pool_, s->arch);
@@ -462,13 +575,15 @@ Id resolver::best_available_id(const string& name) const
 	if (!nameid)
 		return 0;
 
-	Id p;
-	Solvable* s;
-	FOR_REPO_SOLVABLES(available_, p, s) {
-		if (s->name != nameid || !pool_installable(pool_, s))
-			continue;
-		if (!best || pool_evrcmp(pool_, s->evr, pool_id2solvable(pool_, best)->evr, EVRCMP_COMPARE) > 0)
-			best = p;
+	for (size_t r = 0; r < repos_.size(); r++) {
+		Id p;
+		Solvable* s;
+		FOR_REPO_SOLVABLES(repos_[r], p, s) {
+			if (s->name != nameid || !pool_installable(pool_, s))
+				continue;
+			if (!best || pool_evrcmp(pool_, s->evr, pool_id2solvable(pool_, best)->evr, EVRCMP_COMPARE) > 0)
+				best = p;
+		}
 	}
 
 	return best;
@@ -575,8 +690,7 @@ vector<plan_step> resolver::plan() const
 				}
 			}
 
-			const char* file = solvable_lookup_str(s, SOLVABLE_MEDIAFILE);
-			step.filename = file ? file : "";
+			step.filename = solvable_file(p);
 
 			if (type == SOLVER_TRANSACTION_INSTALL ||
 			    type == SOLVER_TRANSACTION_OBSOLETES ||
@@ -603,23 +717,8 @@ vector<plan_step> resolver::plan() const
 
 string resolver::best_available(const string& name) const
 {
-	Id nameid = pool_str2id(pool_, name.c_str(), 0);
-	string best;
-
-	if (!nameid)
-		return best;
-
-	Id p;
-	Solvable* s;
-	FOR_REPO_SOLVABLES(available_, p, s) {
-		if (s->name != nameid || !pool_installable(pool_, s))
-			continue;
-		string v = pool_id2str(pool_, s->evr);
-		if (best.empty() || newer(v, best))
-			best = v;
-	}
-
-	return best;
+	Id best = best_available_id(name);
+	return best ? pool_id2str(pool_, pool_id2solvable(pool_, best)->evr) : string();
 }
 
 bool resolver::newer(const string& a, const string& b) const

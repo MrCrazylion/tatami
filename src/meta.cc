@@ -121,24 +121,3 @@ void validate_meta(const pkgmeta& meta)
 	if (!isalnum((unsigned char)meta.version[0]) || !all_of_chars(meta.version, "+.~:-"))
 		throw runtime_error("invalid version '" + meta.version + "' for package " + meta.name);
 }
-
-vector<pkgmeta> read_index(const string& filename)
-{
-	vector<pkgmeta> result;
-	ifstream in(filename.c_str());
-
-	if (!in)
-		return result;
-
-	pkgmeta meta;
-	try {
-		while (read_meta_block(in, meta)) {
-			validate_meta(meta);
-			result.push_back(meta);
-		}
-	} catch (runtime_error& e) {
-		throw runtime_error(filename + ": " + e.what() + " (the index is corrupt, try 'tatami update')");
-	}
-
-	return result;
-}

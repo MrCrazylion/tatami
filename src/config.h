@@ -10,10 +10,11 @@ using namespace std;
 // (make PKG_EXT=myext, which defines DEFAULT_PKG_EXT) and again at run time
 // through PKG_EXT in tatami.conf. Every place that checks or strips the
 // extension uses config_t::pkg_ext, which starts out as this value.
+//
+// Empty (the default) means: tar.<compression>, whatever the compression is.
 #ifndef DEFAULT_PKG_EXT
-#define DEFAULT_PKG_EXT         "tar.pkg"
+#define DEFAULT_PKG_EXT         ""
 #endif
-#define DEFAULT_REPO_DIR        "/var/lib/tatami/packages"
 #define TATAMI_CONF             "/etc/tatami.conf"
 #define CONF_MAXLINE            1024
 
@@ -29,7 +30,7 @@ struct rule_t {
 };
 
 struct config_t {
-	string pkg_ext;                 // without leading dot, e.g. "tar.pkg"
+	string pkg_ext;                 // without leading dot, empty: tar.<compression>
 	vector<string> repo_dirs;       // directories scanned by 'tatami update'
 	string arch;                    // empty: use the machine architecture
 	string bulkhead;                // tatamk only: "yes" or "no" (build isolation)

@@ -27,8 +27,8 @@ using namespace std;
 // database was already committed, finished) the next time tatami runs.
 class txn {
 public:
-	// 'root' is the absolute installation root and ends in '/'
-	explicit txn(const string& root);
+	// 'journal' is the absolute host path of the journal file
+	explicit txn(const string& journal);
 	~txn();
 
 	// Starts the journal for installing 'name' 'version'
@@ -47,8 +47,8 @@ public:
 	// drops the backups and the journal
 	void commit();
 
-	// Handles a journal left behind by an interrupted run. Returns true (and
-	// says what it did on 'out') if there was one.
+	// Handles a journal left behind by an interrupted run in the installation
+	// root 'root'. Returns true (and says what it did on 'out') if there was one.
 	static bool recover(const string& root, ostream& out);
 
 private:
@@ -69,7 +69,6 @@ private:
 	static void finish(const vector<record>& recs);
 	void close_journal(bool remove_it);
 
-	string root_;
 	string journal_;
 	int fd_;
 	unsigned int counter_;

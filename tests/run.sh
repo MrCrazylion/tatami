@@ -3,13 +3,14 @@
 # drives tatami against a scratch root. Needs root (like tatami itself) and
 # is run with: make check
 cd "$(dirname "$0")/.." || exit 1
-TATAMI="$PWD/tatami"
+export TATAMI="$PWD/tatami"   # tatamk builds packages through the tatami binary
 TATAMK="$PWD/tatamk"
 T="$PWD/tests/work"
 ROOT="$T/root"
 REPO="$T/repo"
 CONF="$T/tatami.conf"
-EXT="tpkg"             # a user-chosen extension, different from the build-time default
+EXT="tpkg"             # a user-chosen extension, different from the default tar.<compression>
+HARCH=$(uname -m)      # packages built here carry the host architecture in their name
 
 pass=0; fail=0
 ok() { pass=$((pass+1)); echo "ok   - $1"; }
@@ -99,8 +100,8 @@ mkpkg broken 1.0 "depends=doesnotexist"
 mkpkg tooold 1.0 "depends=libfoo >= 2.0"
 mkpkg oldname 1.0 file=usr/bin/oldname
 mkpkg newname 1.0 replaces=oldname file=usr/bin/newname
-[ -f "$REPO/libfoo_1.0-1.$EXT" ] && ok "package built with custom extension .$EXT" || bad "package file name" "$(ls "$REPO")"
-tar -tf "$REPO/libfoo_1.0-1.$EXT" | head -1 | grep -qx .META && ok ".META is the first member" || bad ".META first"
+[ -f "$REPO/libfoo_1.0-1_$HARCH.$EXT" ] && ok "package built with custom extension .$EXT" || bad "package file name" "$(ls "$REPO")"
+tar -tf "$REPO/libfoo_1.0-1_$HARCH.$EXT" | head -1 | grep -qx .META && ok ".META is the first member" || bad ".META first"
 
 echo "# update / search"
 check "simulated update writes nothing" 0 t -s update
@@ -109,13 +110,15 @@ check "dependencies resolve without a prior update (index built on demand)" 0 t 
 has "on-demand index finds libfoo" "libfoo \(1.0-1\)"
 absent "simulate writes no index" var/lib/tatami/index
 check "update" 0 t update
-has "update counts packages" "10 packages available"
+has "update indexes every package" "Indexed 10 packages"
+exists "the repository now has a binary repo.solv index" ../repo/repo.solv
 check "search by name" 0 t search '^lib'
 has "search finds libfoo" "libfoo/1.0-1"
 check "search by description" 0 t search 'test package ed'
 has "search description" "^ed/1.0-1"
 check "show" 0 t show app
-has "show depends" "Depends: libfoo >= 1.0, virtual-editor"
+has "show depends (libsolv keeps its own order)" "^Depends: .*libfoo >= 1.0"
+has "show the virtual dependency too" "^Depends: .*virtual-editor"
 has "show not installed" "Status: not installed"
 check "show unknown package" 1 t show nonexistent
 
@@ -128,7 +131,7 @@ has "dependency libfoo installed" "Installing libfoo"
 has "virtual provider installed" "Installing (ed|nano)"
 exists "app file" usr/bin/app
 exists "dependency file" usr/lib/libfoo.so.1
-exists ".META not extracted" var/lib/tatami/db
+exists "database is in the state directory" var/lib/tatami/db
 absent ".META not extracted" .META
 exists "metadata stored" var/lib/tatami/meta/app
 check "install again is a no-op" 0 ty install app
@@ -139,7 +142,7 @@ check "owns" 0 t owns 'bin/app$'
 has "owns finds app" "app +usr/bin/app"
 check "files" 0 t files app
 has "files lists app" "^usr/bin/app$"
-check "files of a package file" 0 t files "$REPO/libfoo_1.0-1.$EXT"
+check "files of a package file" 0 t files "$REPO/libfoo_1.0-1_$HARCH.$EXT"
 has "files of package file" "usr/lib/libfoo.so.1"
 check "show installed" 0 t show app
 has "show status" "Status: installed \(1.0-1\)"
@@ -188,7 +191,7 @@ check "app binary upgraded" 0 cat "$ROOT/usr/bin/app"
 has "new binary" "app 2.0"
 
 echo "# install from a package file"
-check "install a file argument" 0 ty install "$REPO/oldname_1.0-1.$EXT"
+check "install a file argument" 0 ty install "$REPO/oldname_1.0-1_$HARCH.$EXT"
 exists "file installed" usr/bin/oldname
 check "reject a file with the wrong extension" 1 ty install "$T/recipes/oldname-1.0/Tatamifile"
 
@@ -269,14 +272,14 @@ build() {
 }
 RECIPE
 check "a failing command in build() fails the build" 1 "$TATAMK" -c "$CONF" -f "$T/recipes/failing/Tatamifile" -o "$T/failout"
-[ ! -e "$T/failout/failing_1.$EXT" ] && ok "no package produced by failing build" || bad "package produced by failing build"
+[ ! -e "$T/failout/failing_1_$HARCH.$EXT" ] && ok "no package produced by failing build" || bad "package produced by failing build"
 mkdir -p "$T/recipes/commas"
 printf 'name=commas\nversion=1\ndepends=("a, b")\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/commas/Tatamifile"
 check "relation containing a comma is refused" 1 "$TATAMK" -c "$CONF" -f "$T/recipes/commas/Tatamifile" -o "$T/failout"
 mkdir -p "$T/recipes/dash"
 printf 'name=dash\nversion=1\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/-rf; }\n' > "$T/recipes/dash/Tatamifile"
 check "file names starting with a dash are packaged" 0 "$TATAMK" -c "$CONF" -f "$T/recipes/dash/Tatamifile" -o "$T/failout"
-check "dash file is in the package" 0 tar -tf "$T/failout/dash_1.$EXT"
+check "dash file is in the package" 0 tar -tf "$T/failout/dash_1_$HARCH.$EXT"
 has "listed" "x/-rf"
 
 echo "# bulkhead (bwrap is mocked: this host cannot create user namespaces)"
@@ -375,7 +378,7 @@ bk() { TATAMI="$TATAMI" "$TATAMK" -c "$CONF_BULK" -f "$T/recipes/boxed/Tatamifil
 check "isolated build refuses to run without bwrap" 1 bk
 has "error names bwrap" "require bwrap"
 has "error names the opt-out" "no-bulkhead"
-[ ! -e "$T/boxout/boxed_1.$EXT" ] && ok "no package without bwrap" || bad "package built without bwrap"
+[ ! -e "$T/boxout/boxed_1_$HARCH.$EXT" ] && ok "no package without bwrap" || bad "package built without bwrap"
 check "--no-bulkhead builds without bwrap" 0 bk --no-bulkhead
 check "--no-sandbox is an alias" 0 bk --no-sandbox
 rm -rf "$T/boxout"
@@ -394,13 +397,13 @@ if [ "$(id -u)" = 0 ] && [ ! -e /tmp/build ] && [ ! -e /tmp/destdir ]; then
 	rm -rf "$T/boxout"
 	OUT=$(PATH="$MOCK:$PATH" bk 2>&1); rc=$?
 	[ $rc -eq 0 ] && ok "build through the (mock) sandbox succeeds" || bad "sandboxed build (rc $rc)" "$OUT"
-	tar -xOf "$T/boxout/boxed_1.$EXT" usr/share/boxed/env 2>/dev/null | grep -qx "/tmp/destdir /tmp/destdir from helper /tmp/build/src" \
+	tar -xOf "$T/boxout/boxed_1_$HARCH.$EXT" usr/share/boxed/env 2>/dev/null | grep -qx "/tmp/destdir /tmp/destdir from helper /tmp/build/src" \
 		&& ok "inside: PKG and DESTDIR are /tmp/destdir, recipe functions work, cwd is /tmp/build/src" \
-		|| bad "environment inside the sandbox" "$(tar -xOf "$T/boxout/boxed_1.$EXT" usr/share/boxed/env 2>&1)"
+		|| bad "environment inside the sandbox" "$(tar -xOf "$T/boxout/boxed_1_$HARCH.$EXT" usr/share/boxed/env 2>&1)"
 	mkdir -p "$T/recipes/boxfail"
 	printf 'name=boxfail\nversion=1\nbuild() { mkdir -p $PKG/x; false; echo hi > $PKG/x/f; }\n' > "$T/recipes/boxfail/Tatamifile"
 	OUT=$(PATH="$MOCK:$PATH" TATAMI="$TATAMI" "$TATAMK" -c "$CONF_BULK" -f "$T/recipes/boxfail/Tatamifile" -o "$T/boxout" 2>&1); rc=$?
-	[ $rc -ne 0 ] && [ ! -e "$T/boxout/boxfail_1.$EXT" ] && ok "failing build inside the sandbox fails tatamk" || bad "failing sandboxed build" "$OUT"
+	[ $rc -ne 0 ] && [ ! -e "$T/boxout/boxfail_1_$HARCH.$EXT" ] && ok "failing build inside the sandbox fails tatamk" || bad "failing sandboxed build" "$OUT"
 	unset MOCK_EMULATE MOCK_ANY_DEST
 else
 	echo "skip - sandboxed tatamk build (needs root and no /tmp/build or /tmp/destdir on this host)"
@@ -423,38 +426,63 @@ exists "package without arch installed" usr/share/na/none
 check "a package for another architecture is still refused" 1 ty install na-foreign
 has "with the architecture message" "incompatible with this system"
 absent "foreign package not installed" usr/share/na/foreign
-check "noarch also installs from a file argument" 0 ty install "$REPO/na-any_1.0-1.$EXT"
+check "noarch also installs from a file argument" 0 ty install "$REPO/na-any_1.0-1_noarch.$EXT"
 check "noarch installs when the host architecture is unknown to libsolv" 0 bash -c "echo 'ARCH = zz80' > '$T/zz.conf'; cat '$CONF' >> '$T/zz.conf'; '$TATAMI' -r '$ROOT' -c '$T/zz.conf' -s install na-noarch"
 
-echo "# package extension: build-time default, config, environment"
-DEFEXT=$(sed -n 's/^PKG_EXT="\([^"]*\)".*/\1/p' "$TATAMK" | head -1)
-[ -n "$DEFEXT" ] && [ "$DEFEXT" != "@DEFAULT_PKG_EXT@" ] && ok "tatamk carries the build-time default extension ($DEFEXT)" || bad "default extension not substituted in tatamk" "$DEFEXT"
-[ "$DEFEXT" != "$EXT" ] && ok "the suite's configured extension differs from the default" || bad "test extension equals the default"
+echo "# package names: <name>_<version>-<release>_<arch>.tar.<compression>, or a fixed extension"
+DEFEXT=$(sed -n 's/^PKG_EXT="\([^"]*\)".*/\1/p' "$TATAMK" | head -1)      # empty unless built with make PKG_EXT=...
+[ "$DEFEXT" != "@DEFAULT_PKG_EXT@" ] && ok "the build-time extension was substituted in tatamk (${DEFEXT:-automatic})" || bad "default extension not substituted in tatamk" "$DEFEXT"
+[ "$DEFEXT" != "$EXT" ] && ok "the suite's configured extension differs from the build default" || bad "test extension equals the default"
+EXPECT="${DEFEXT:-tar.zst}"
 mkdir -p "$T/extrepo" "$T/recipes/ext1"
-printf 'name=ext1\nversion=1\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext1/Tatamifile"
+printf 'name=ext1\nversion=1\nrelease=3\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext1/Tatamifile"
 printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$T/extrepo" > "$T/noext.conf"
-check "tatamk without PKG_EXT in the config uses the build-time default" 0 "$TATAMK" -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
-[ -f "$T/extrepo/ext1_1.$DEFEXT" ] && ok "package is named ext1_1.$DEFEXT" || bad "default-named package missing" "$(ls "$T/extrepo")"
-check "tatami without PKG_EXT in the config indexes the same extension" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" update
+check "tatamk without PKG_EXT in the config names the package by the default" 0 "$TATAMK" -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+[ -f "$T/extrepo/ext1_1-3_${HARCH}.$EXPECT" ] && ok "package is named ext1_1-3_${HARCH}.$EXPECT" || bad "default-named package missing" "$(ls "$T/extrepo")"
+check "tatami without PKG_EXT in the config recognises that name" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" index "$T/extrepo"
 has "tatami found the default-named package" "1 package"
-OUT=$(PKG_EXT=envext "$TATAMK" -c "$CONF" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo" 2>&1); [ -f "$T/extrepo/ext1_1.envext" ] && ok "PKG_EXT in the environment overrides the config (and the default)" || bad "environment override" "$OUT"
-OUT=$(PKG_EXT=.dotext "$TATAMK" -c "$CONF" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo" 2>&1); [ -f "$T/extrepo/ext1_1.dotext" ] && ok "a leading dot in the environment value is ignored" || bad "leading dot" "$OUT"
+hasnt "no naming warning" "named differently"
+if [ -z "$DEFEXT" ]; then
+	for c in xz gz bz2 lz4 lzma; do
+		check "tatamk -z $c names the package tar.$c" 0 "$TATAMK" -z $c -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+		[ -f "$T/extrepo/ext1_1-3_${HARCH}.tar.$c" ] && ok "ext1_1-3_${HARCH}.tar.$c exists" || bad "tar.$c package missing" "$(ls "$T/extrepo")"
+	done
+	check "tatamk -z none names it .tar" 0 "$TATAMK" -z none -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+	[ -f "$T/extrepo/ext1_1-3_${HARCH}.tar" ] && ok "uncompressed package is ext1_1-3_${HARCH}.tar" || bad "plain tar package missing"
+	check "tatamk refuses an unknown compression" 1 "$TATAMK" -z rot13 -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+	check "tatami indexes every tar.<compression> in one repository" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" index "$T/extrepo"
+	has "the same package in several formats is indexed once" "Indexed 1 package "
+	has "and the extra copies are reported" "ext1 1-3 is already in the repository"
+fi
+OUT=$(PKG_EXT=envext "$TATAMK" -c "$CONF" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo" 2>&1); [ -f "$T/extrepo/ext1_1-3_${HARCH}.envext" ] && ok "PKG_EXT in the environment overrides the config (and the default)" || bad "environment override" "$OUT"
+OUT=$(PKG_EXT=.dotext "$TATAMK" -c "$CONF" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo" 2>&1); [ -f "$T/extrepo/ext1_1-3_${HARCH}.dotext" ] && ok "a leading dot in the environment value is ignored" || bad "leading dot" "$OUT"
 check "an invalid extension in the environment is refused" 1 env 'PKG_EXT=a/b' "$TATAMK" -c "$CONF" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 check "the config beats the build-time default" 0 "$TATAMK" -c "$CONF" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
-[ -f "$T/extrepo/ext1_1.$EXT" ] && ok "config extension $EXT used" || bad "config extension not used" "$(ls "$T/extrepo")"
+[ -f "$T/extrepo/ext1_1-3_${HARCH}.$EXT" ] && ok "config extension $EXT used" || bad "config extension not used" "$(ls "$T/extrepo")"
+# the architecture is part of the name, and an underscore inside it (x86_64) does not confuse the parser
+mkdir -p "$T/recipes/ext2"
+printf 'name=ext-two\nversion=2.5\nrelease=1\narch=x86_64\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext2/Tatamifile"
+check "build a package for x86_64 (hyphenated name, underscore in the arch)" 0 "$TATAMK" -c "$T/noext.conf" -f "$T/recipes/ext2/Tatamifile" -o "$T/extrepo"
+[ -f "$T/extrepo/ext-two_2.5-1_x86_64.$EXPECT" ] && ok "named ext-two_2.5-1_x86_64.$EXPECT" || bad "x86_64 package name" "$(ls "$T/extrepo")"
+check "tatami parses it back without a naming warning" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" index "$T/extrepo"
+hasnt "no warning for a name whose arch contains an underscore" "named differently"
+printf 'name=ext3\nversion=1\narch=NoArch\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext2/Tatamifile"
+check "arch in any case: NoArch is written noarch" 0 "$TATAMK" -c "$T/noext.conf" -f "$T/recipes/ext2/Tatamifile" -o "$T/extrepo"
+[ -f "$T/extrepo/ext3_1_noarch.$EXPECT" ] && ok "named ext3_1_noarch.$EXPECT" || bad "noarch name" "$(ls "$T/extrepo")"
+rm -rf "$T/extrepo"
 
-echo "# compression formats (libarchive is vendored with zlib and zstd only)"
-for comp in gz zst xz bz2; do
+echo "# compression formats: all read and written natively, no external program"
+for comp in gz zst xz bz2 lz4 lzma; do
 	mkdir -p "$T/comp-$comp/recipe" "$T/comp-$comp/repo" "$T/comp-$comp/root/etc"
 	printf 'name=cmp-%s\nversion=1\nbuild() { mkdir -p $PKG/usr/share/cmp; echo "compressed with %s" > $PKG/usr/share/cmp/%s; }\n' "$comp" "$comp" "$comp" > "$T/comp-$comp/recipe/Tatamifile"
 	printf 'PKG_EXT = %s\nPKG_COMPRESSION = %s\nREPO_DIRS = %s\nBULKHEAD = no\n' "$EXT" "$comp" "$T/comp-$comp/repo" > "$T/comp-$comp/conf"
 	check "tatamk builds a $comp package" 0 "$TATAMK" -c "$T/comp-$comp/conf" -f "$T/comp-$comp/recipe/Tatamifile" -o "$T/comp-$comp/repo"
-	pkgf="$T/comp-$comp/repo/cmp-${comp}_1.$EXT"
-	case "$comp" in gz) magic='1f8b' ;; zst) magic='28b52ffd' ;; xz) magic='fd377a585a00' ;; bz2) magic='425a68' ;; esac
+	pkgf="$T/comp-$comp/repo/cmp-${comp}_1_$HARCH.$EXT"
+	case "$comp" in gz) magic='1f8b' ;; zst) magic='28b52ffd' ;; xz) magic='fd377a585a00' ;; bz2) magic='425a68' ;; lz4) magic='04224d18' ;; lzma) magic='5d0000' ;; esac
 	[ "$(head -c 6 "$pkgf" | od -An -tx1 | tr -d ' \n' | cut -c1-${#magic})" = "$magic" ] && ok "the $comp package really is $comp-compressed" || bad "$comp package has the wrong compression" "$(head -c 6 "$pkgf" | od -An -tx1)"
-	check "tatami lists the files of a $comp package" 0 "$TATAMI" -r "$T/comp-$comp/root" -c "$T/comp-$comp/conf" files "$pkgf"
+	check "tatami lists the files of a $comp package (PATH is empty: no external program)" 0 env PATH=/nonexistent "$TATAMI" -r "$T/comp-$comp/root" -c "$T/comp-$comp/conf" files "$pkgf"
 	has "$comp: file list" "usr/share/cmp/$comp"
-	check "tatami installs a $comp package" 0 "$TATAMI" -r "$T/comp-$comp/root" -c "$T/comp-$comp/conf" -y install "$pkgf"
+	check "tatami installs a $comp package (PATH is empty)" 0 env PATH=/nonexistent "$TATAMI" -r "$T/comp-$comp/root" -c "$T/comp-$comp/conf" -y install "$pkgf"
 	grep -qx "compressed with $comp" "$T/comp-$comp/root/usr/share/cmp/$comp" 2>/dev/null && ok "$comp: file content extracted intact" || bad "$comp: content wrong or missing"
 	check "tatami indexes a $comp package" 0 "$TATAMI" -r "$T/comp-$comp/root" -c "$T/comp-$comp/conf" update
 done
@@ -654,16 +682,266 @@ has_data "version TWO" && ok "the committed content is kept" || bad "committed c
 absent "journal removed" var/lib/tatami/transaction.journal
 ROOT="$ROOT_MAIN"
 
+# ---------------------------------------------------------------------------
+# helpers for the sections below: build a package with its own tiny recipe
+#   mkp <repo-dir> <name> <version> <arch|-> <depends|-> [path:content]...
+TCONF="$T/mk.conf"; printf 'PKG_COMPRESSION = gz\nBULKHEAD = no\n' > "$TCONF"
+mkp() {
+	local repo="$1" name="$2" version="$3" arch="$4" deps="$5"; shift 5
+	local dir="$T/recipes-x/$name-$version-$RANDOM" body="" f
+	mkdir -p "$dir" "$repo"
+	for f in "$@"; do
+		body="$body"$'\n\t'"mkdir -p \$PKG/$(dirname "${f%%:*}"); printf '%s\\n' '${f#*:}' > \$PKG/${f%%:*}"
+	done
+	{
+		echo "name=$name"; echo "version=$version"
+		[ "$arch" != - ] && echo "arch=$arch"
+		[ "$deps" != - ] && echo "depends=($deps)"
+		echo "build() {$body"; echo "}"
+	} > "$dir/Tatamifile"
+	"$TATAMK" -c "$TCONF" -f "$dir/Tatamifile" -o "$repo" > "$dir/log" 2>&1 || bad "tatamk $name $version" "$(cat "$dir/log")"
+}
+
+echo "# repositories: the binary repo.solv index"
+RP="$T/repos"; rm -rf "$RP"; mkdir -p "$RP/a" "$RP/b" "$RP/root/etc"
+mkp "$RP/a" rp-one 1.0 - '"rp-two >= 1.0"' usr/share/rp-one/f:one
+mkp "$RP/a" rp-two 1.0 - - usr/share/rp-two/f:two
+printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$RP/a" > "$RP/a.conf"
+ROOT_MAIN="$ROOT"; ROOT="$RP/root"
+tr() { "$TATAMI" -r "$ROOT" -c "$RP/$1.conf" "${@:2}"; }
+check "tatami index writes repo.solv into the directory" 0 "$TATAMI" index "$RP/a"
+has "it reports the packages" "Indexed 2 packages in .*/a/repo.solv"
+[ "$(head -c 4 "$RP/a/repo.solv")" = SOLV ] && ok "repo.solv is a libsolv binary repository" || bad "repo.solv is not a SOLV file" "$(head -c 8 "$RP/a/repo.solv" | od -c | head -1)"
+check "tatami index of a directory that does not exist fails" 1 "$TATAMI" index "$RP/nowhere"
+check "tatami index without an argument fails" 1 "$TATAMI" index
+# the index is used as it is when it is not older than the packages: with a garbage package file the
+# scanner would skip it, only the index still knows it
+cp "$RP/a/repo.solv" "$RP/repo.solv.saved"
+rm -f "$RP"/a/rp-two_1.0*; echo garbage > "$RP/a/rp-two_1.0_garbage.tar.gz"; touch -d '2000-01-01' "$RP/a"
+check "a fresh repo.solv is trusted (dependencies come from the index)" 0 tr a show rp-one
+has "the dependency is known from the index" "^Depends: rp-two >= 1.0"
+has "so are file name and size" "^Filename: .*/a/rp-one_1.0_"
+check "the index knows the dependency package too" 0 tr a show rp-two
+check "installing fails cleanly when the indexed file is not what it claims" 1 tr a -y install rp-one
+hasnt "and nothing was half-installed" "Installing"
+rm -f "$RP/a/rp-two_1.0_garbage.tar.gz"
+mkp "$RP/a" rp-two 1.0 - - usr/share/rp-two/f:two
+check "re-indexing after the repair" 0 "$TATAMI" index "$RP/a"
+# stale index: a package added after the index was written is still found, with a hint
+mkp "$RP/a" rp-three 1.0 - - usr/share/rp-three/f:three
+OUT=$(tr a show rp-three 2>&1); echo "$OUT" | grep -q "^Package: rp-three" && ok "a package added after indexing is found (the directory is scanned)" || bad "stale index" "$OUT"
+echo "$OUT" | grep -q "older than the packages" && ok "with a warning to re-index" || bad "no stale warning" "$OUT"
+check "update re-indexes the configured repository" 0 tr a update
+has "update reports it" "Indexed 3 packages in .*/a/repo.solv"
+OUT=$(tr a show rp-three 2>&1); echo "$OUT" | grep -q "older than" && bad "still stale after update" "$OUT" || ok "no warning once the index is current"
+check "install through the index, with its dependency" 0 tr a -y install rp-one
+exists "package installed" usr/share/rp-one/f
+exists "its dependency from the same repository" usr/share/rp-two/f
+
+echo "# repositories: several, file:// URLs, the default location"
+rm -rf "$ROOT"; mkdir -p "$ROOT/etc"
+mkp "$RP/a" rp-dup 1.0 - - usr/share/rp-dup/f:from-a
+mkp "$RP/b" rp-dup 1.0 - - usr/share/rp-dup/f:from-b
+printf 'REPO_DIRS = %s %s\nBULKHEAD = no\n' "$RP/a" "$RP/b" > "$RP/ab.conf"
+printf 'REPO_DIRS = %s %s\nBULKHEAD = no\n' "$RP/b" "$RP/a" > "$RP/ba.conf"
+check "update indexes every configured repository" 0 tr ab update
+has "first repository" "Indexed [0-9]+ packages? in .*/a/repo.solv"
+has "second repository" "Indexed [0-9]+ packages? in .*/b/repo.solv"
+check "the same version in two repositories: the first one listed is used" 0 tr ab -y install rp-dup
+[ "$(cat "$ROOT/usr/share/rp-dup/f")" = from-a ] && ok "installed from the first repository (a)" || bad "wrong repository used" "$(cat "$ROOT/usr/share/rp-dup/f")"
+check "remove it" 0 tr ab -y remove rp-dup
+check "with the order reversed" 0 tr ba -y install rp-dup
+[ "$(cat "$ROOT/usr/share/rp-dup/f")" = from-b ] && ok "installed from the first repository (b)" || bad "wrong repository used" "$(cat "$ROOT/usr/share/rp-dup/f")"
+tr ba -y remove rp-dup >/dev/null 2>&1
+printf 'REPO_DIRS = file://%s\nBULKHEAD = no\n' "$RP/b" > "$RP/url.conf"
+check "a file:// URL is a repository" 0 tr url show rp-dup
+printf 'REPO_DIRS = https://example.invalid/repo\nBULKHEAD = no\n' > "$RP/http.conf"
+check "a network URL is refused clearly" 1 tr http list --available
+has "with the reason" "network repositories are not supported"
+printf 'BULKHEAD = no\n' > "$RP/default.conf"
+mkdir -p "$ROOT/var/lib/tatami/packages"
+mkp "$ROOT/var/lib/tatami/packages" rp-local 1.0 - - usr/share/rp-local/f:local
+check "without REPO_DIRS the repository is <root>/var/lib/tatami/packages" 0 tr default -y install rp-local
+exists "installed from the default repository inside the root" usr/share/rp-local/f
+ROOT="$ROOT_MAIN"
+
+echo "# target architecture: the pool follows the target system, mismatches are refused"
+AR="$T/arch"; rm -rf "$AR"; mkdir -p "$AR/repo" "$AR/root/etc"
+# the arch goes into the file name, the package name may not contain '_': ar-x86_64 is ar-x8664
+for a in riscv64 x86_64 i686 aarch64 noarch; do mkp "$AR/repo" "ar-${a//_/}" 1.0 "$a" - "usr/share/ar-${a//_/}/f:$a"; done
+mkp "$AR/repo" ar-needs 1.0 noarch '"ar-aarch64"' usr/share/ar-needs/f:needs
+"$TATAMI" index "$AR/repo" >/dev/null 2>&1
+ROOT="$AR/root"
+arch_try() { # arch-policy package... : install in a fresh root configured for that architecture
+	local policy="$1"; shift
+	rm -rf "$ROOT"; mkdir -p "$ROOT/etc"
+	printf 'ARCH = %s\nREPO_DIRS = %s\nBULKHEAD = no\n' "$policy" "$AR/repo" > "$AR/c.conf"
+	OUT=$("$TATAMI" -r "$ROOT" -c "$AR/c.conf" -y install "$@" 2>&1); rc=$?
+}
+arch_try riscv64 ar-riscv64 ar-noarch; [ $rc -eq 0 ] && ok "a riscv64 target installs riscv64 and noarch packages" || bad "riscv64 target" "$OUT"
+exists "riscv64 package installed" usr/share/ar-riscv64/f
+arch_try riscv64 ar-aarch64; [ $rc -ne 0 ] && echo "$OUT" | grep -q "incompatible with this system (riscv64)" && ok "a riscv64 target refuses an aarch64 package, naming both" || bad "foreign arch accepted" "$OUT"
+arch_try riscv64 ar-x8664; [ $rc -ne 0 ] && ok "and an x86_64 one" || bad "x86_64 accepted on riscv64" "$OUT"
+arch_try x86_64 ar-x8664; [ $rc -eq 0 ] && ok "an x86_64 target installs x86_64 packages" || bad "x86_64 target" "$OUT"
+arch_try x86_64 ar-i686; [ $rc -ne 0 ] && ok "an x86_64 target does not install i686 packages (no implicit multilib)" || bad "i686 accepted on a plain x86_64 target" "$OUT"
+arch_try x86_64:i686 ar-x8664 ar-i686; [ $rc -eq 0 ] && ok "ARCH = x86_64:i686 allows both" || bad "multilib target" "$OUT"
+arch_try x86_64:i686 ar-aarch64; [ $rc -ne 0 ] && ok "but still not aarch64" || bad "aarch64 accepted on x86_64:i686" "$OUT"
+arch_try "$HARCH" ar-noarch; [ $rc -eq 0 ] && ok "noarch fits any target" || bad "noarch refused" "$OUT"
+arch_try riscv64 ar-needs; [ $rc -ne 0 ] && echo "$OUT" | grep -q "ar-aarch64" && ok "a dependency that exists only for another architecture is not found" || bad "wrong-arch dependency accepted" "$OUT"
+arch_try aarch64 ar-needs; [ $rc -eq 0 ] && exists "while on aarch64 it resolves" usr/share/ar-aarch64/f || bad "dependency on the right arch" "$OUT"
+# tatamk follows the same configuration: its default architecture is the first ARCH entry
+mkdir -p "$AR/recipe"; printf 'name=ar-default\nversion=1\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$AR/recipe/Tatamifile"
+printf 'ARCH = riscv64:foo\nBULKHEAD = no\nPKG_COMPRESSION = gz\n' > "$AR/mk.conf"
+check "tatamk builds for the configured target architecture" 0 "$TATAMK" -c "$AR/mk.conf" -f "$AR/recipe/Tatamifile" -o "$AR/out"
+[ -f "$AR/out/ar-default_1_riscv64.tar.gz" ] && ok "ar-default_1_riscv64.tar.gz" || bad "arch in file name" "$(ls "$AR/out")"
+check "tatami read the architecture back" 0 "$TATAMI" -c "$AR/mk.conf" files "$AR/out/ar-default_1_riscv64.tar.gz"
+ROOT="$ROOT_MAIN"
+
+echo "# --root: nothing outside the root is touched (usr-merged root with an ABSOLUTE link /lib -> /usr/lib)"
+IR="$T/iso-root"; rm -rf "$IR"; mkdir -p "$IR/usr/lib" "$IR/usr/bin" "$IR/etc" "$T/iso-repo"
+ln -s /usr/lib "$IR/lib"; ln -s usr/bin "$IR/bin"
+HF=$(for f in /usr/lib/*; do [ -f "$f" ] && [ ! -L "$f" ] && { basename "$f"; break; }; done)
+HOSTSUM=$(md5sum "/usr/lib/$HF" | cut -d' ' -f1)
+HOSTLINK=$(readlink /lib 2>/dev/null)
+had_pkg=0; [ -e /var/lib/pkg ] && had_pkg=1
+had_tatami=0; [ -e /var/lib/tatami ] && had_tatami=1
+ldcache=$(stat -c %Y /etc/ld.so.cache 2>/dev/null)
+STAMP="$T/iso.stamp"; touch "$STAMP"; sleep 1
+# this package ships a file under lib/ whose name is also a real file in the HOST's /usr/lib
+mkp "$T/iso-repo" iso-pkg 1.0 - - "lib/$HF:from the package" lib/isolib.so:lib bin/isotool:tool usr/share/iso/data:data
+"$TATAMI" index "$T/iso-repo" >/dev/null 2>&1
+printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$T/iso-repo" > "$T/iso.conf"
+ti() { "$TATAMI" -r "$IR" -c "$T/iso.conf" "$@"; }
+OUT=$(ti -y install iso-pkg 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "install into the usr-merged root" || bad "install failed" "$OUT"
+[ -f "$IR/usr/lib/isolib.so" ] && ok "lib/isolib.so went through the link to <root>/usr/lib" || bad "file not in the root's usr/lib" "$(find "$IR" -name isolib.so)"
+[ -f "$IR/usr/bin/isotool" ] && ok "bin/isotool went through the relative link to <root>/usr/bin" || bad "isotool missing"
+[ "$(cat "$IR/usr/lib/$HF")" = "from the package" ] && ok "the package's lib/$HF is <root>/usr/lib/$HF" || bad "wrong content" "$(cat "$IR/usr/lib/$HF")"
+[ "$(md5sum "/usr/lib/$HF" | cut -d' ' -f1)" = "$HOSTSUM" ] && ok "the host's /usr/lib/$HF is unchanged (same name, installed over the link)" || bad "HOST FILE CHANGED"
+[ ! -e /usr/lib/isolib.so ] && ok "nothing new appeared in the host's /usr/lib" || bad "HOST /usr/lib/isolib.so EXISTS"
+[ -L "$IR/lib" ] && [ "$(readlink "$IR/lib")" = /usr/lib ] && ok "the root's own link is still /lib -> /usr/lib" || bad "link changed"
+ti -y install iso-pkg >/dev/null 2>&1
+mkp "$T/iso-repo" iso-pkg 2.0 - - "lib/$HF:from the package v2" lib/isolib.so:lib2 bin/isotool:tool2
+"$TATAMI" index "$T/iso-repo" >/dev/null 2>&1
+OUT=$(ti -y upgrade 2>&1); rc=$?
+[ $rc -eq 0 ] && [ "$(cat "$IR/usr/lib/isolib.so")" = lib2 ] && ok "upgrade through the links" || bad "upgrade" "$OUT"
+[ "$(md5sum "/usr/lib/$HF" | cut -d' ' -f1)" = "$HOSTSUM" ] && ok "the host file is still unchanged after the upgrade" || bad "HOST FILE CHANGED BY UPGRADE"
+OUT=$(ti -y remove iso-pkg 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "remove through the links" || bad "remove" "$OUT"
+[ ! -e "$IR/usr/lib/isolib.so" ] && [ ! -e "$IR/usr/lib/$HF" ] && ok "the files were removed from the root" || bad "files left in the root"
+[ -f "/usr/lib/$HF" ] && [ "$(md5sum "/usr/lib/$HF" | cut -d' ' -f1)" = "$HOSTSUM" ] && ok "REMOVING did not delete the host's /usr/lib/$HF (the link was resolved inside the root)" || bad "HOST FILE DELETED OR CHANGED BY REMOVE"
+[ -L "$IR/lib" ] && ok "the root's /lib link survived the removal" || bad "link removed"
+# the database and the journal are the root's
+[ -f "$IR/var/lib/tatami/db" ] && ok "database: <root>/var/lib/tatami/db" || bad "no database in the root"
+[ -d "$IR/var/lib/tatami/meta" ] && ok "state: <root>/var/lib/tatami" || bad "no state in the root"
+[ ! -e "$IR/var/lib/tatami/transaction.journal" ] && ok "no journal left in the root" || bad "journal left"
+[ "$(readlink /lib 2>/dev/null)" = "$HOSTLINK" ] && ok "the host's /lib is as it was" || bad "host /lib changed"
+[ -e /var/lib/pkg ] && [ $had_pkg = 0 ] && bad "tatami created /var/lib/pkg on the host" || ok "no /var/lib/pkg was created on the host (unused)"
+[ -e /var/lib/tatami ] && [ $had_tatami = 0 ] && bad "tatami created /var/lib/tatami on the host" || ok "no /var/lib/tatami was created on the host"
+[ "$(stat -c %Y /etc/ld.so.cache 2>/dev/null)" = "$ldcache" ] && ok "the host's ld.so.cache is untouched" || bad "host ld.so.cache changed"
+CHANGED=$(find /usr /etc /var/lib /bin /sbin /lib /lib64 /opt -xdev -newer "$STAMP" 2>/dev/null | head -5)
+[ -z "$CHANGED" ] && ok "no file below /usr /etc /var/lib /bin /sbin /lib /opt on the host is newer than the start of the test" || bad "the host was modified" "$CHANGED"
+# a symlink loop in the root is an error, not a hang or an escape
+ln -s loop "$IR/loop"
+mkp "$T/iso-repo" iso-loop 1.0 - - loop/x:x
+"$TATAMI" index "$T/iso-repo" >/dev/null 2>&1
+OUT=$(timeout 20 "$TATAMI" -r "$IR" -c "$T/iso.conf" -y install iso-loop 2>&1); rc=$?
+[ $rc -ne 0 ] && [ $rc -ne 124 ] && echo "$OUT" | grep -q "too many levels of symbolic links" && ok "a symbolic link loop in the root is reported" || bad "link loop (rc $rc)" "$OUT"
+rm -f "$IR/loop"
+# without --root the root is /: read-only commands work on the host's database and create nothing
+check "without -r the root is /" 0 "$TATAMI" -c "$T/iso.conf" list
+[ ! -e /var/lib/tatami ] || [ $had_tatami = 1 ] && ok "a read-only command on / created no state" || bad "list created /var/lib/tatami"
+OUT=$("$TATAMI" -c "$T/iso.conf" -r / --version 2>&1); echo "$OUT" | grep -q '^tatami' && ok "-r / is accepted" || bad "-r /"
+
+echo "# hooks: post-transaction triggers, nothing hard-coded"
+HK="$T/hk-root"; rm -rf "$HK"; mkdir -p "$HK/etc/tatami/hooks.d" "$HK/etc"
+mkdir -p "$T/hk-repo"
+mkp "$T/hk-repo" hk-lib 1.0 - - usr/lib/libhk.so:lib
+mkp "$T/hk-repo" hk-lib2 1.0 - - usr/lib/libhk2.so:lib2
+mkp "$T/hk-repo" hk-data 1.0 - - usr/share/hk-data/f:data
+"$TATAMI" index "$T/hk-repo" >/dev/null 2>&1
+printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$T/hk-repo" > "$T/hk.conf"
+th() { "$TATAMI" -r "$HK" -c "$T/hk.conf" "$@"; }
+cat > "$HK/etc/tatami/hooks.d/10-libs.hook" <<'HOOK'
+# runs when something below usr/lib changed; checks that the database already lists the package
+Trigger   = ^usr/lib/
+Operation = install upgrade
+Exec      = /bin/sh -c 'echo "libs: $(grep -c "^hk-lib" "%ROOT%/var/lib/tatami/db") $TATAMI_ROOT" >> "%ROOT%/hook.log"'
+HOOK
+cat > "$HK/etc/tatami/hooks.d/20-removed.hook" <<'HOOK'
+Trigger   = ^usr/lib/
+Operation = remove
+Exec      = /bin/sh -c 'echo removed >> "%ROOT%/hook.log"'
+HOOK
+cat > "$HK/etc/tatami/hooks.d/30-needs.hook" <<'HOOK'
+Trigger   = ^usr/
+Needs     = etc/this-file-does-not-exist
+Exec      = /bin/sh -c 'echo SHOULD-NOT-RUN >> "%ROOT%/hook.log"'
+HOOK
+check "install two libraries in one transaction" 0 th -y install hk-lib hk-lib2
+has "the hook ran" "Running hook 10-libs"
+[ "$(grep -c '^libs:' "$HK/hook.log")" = 1 ] && ok "once per transaction, not once per package" || bad "hook count" "$(cat "$HK/hook.log")"
+grep -q "^libs: 2 $HK\$" "$HK/hook.log" && ok "after the database commit (it saw both packages) with %ROOT% and TATAMI_ROOT set" || bad "hook environment or timing" "$(cat "$HK/hook.log")"
+grep -q SHOULD-NOT-RUN "$HK/hook.log" && bad "a hook whose Needs is missing ran" || ok "a hook whose Needs path is missing does not run"
+hasnt "and it is not even announced" "30-needs"
+check "install a package that triggers nothing" 0 th -y install hk-data
+hasnt "no hook runs" "Running hook"
+[ "$(grep -c '^libs:' "$HK/hook.log")" = 1 ] && ok "the log did not grow" || bad "hook ran for an unrelated package"
+check "remove a library" 0 th -y remove hk-lib
+has "the remove hook ran" "Running hook 20-removed"
+hasnt "the install/upgrade hook did not" "Running hook 10-libs"
+grep -q '^removed$' "$HK/hook.log" && ok "remove hook output logged" || bad "remove hook" "$(cat "$HK/hook.log")"
+cat > "$HK/etc/tatami/hooks.d/40-fails.hook" <<'HOOK'
+Trigger = ^usr/
+Exec    = /bin/sh -c 'exit 3'
+HOOK
+check "a failing hook does not undo the transaction or fail the command" 0 th -y install hk-lib
+has "it is reported" "hook 40-fails failed \(exit status 3\)"
+[ -f "$HK/usr/lib/libhk.so" ] && ok "the package is installed" || bad "the package is not installed"
+rm "$HK/etc/tatami/hooks.d/40-fails.hook"
+cat > "$HK/etc/tatami/hooks.d/50-missing.hook" <<'HOOK'
+Trigger = ^usr/
+Exec    = /no/such/program --flag
+HOOK
+OUT=$(th -y remove hk-data 2>&1); rc=$?
+[ $rc -eq 0 ] && echo "$OUT" | grep -q "could not run /no/such/program" && ok "a hook whose program does not exist is reported, not fatal" || bad "missing hook program (rc $rc)" "$OUT"
+rm "$HK/etc/tatami/hooks.d/50-missing.hook"
+printf 'Trigger = ^usr/\nColor = blue\nExec = true\n' > "$HK/etc/tatami/hooks.d/60-bad.hook"
+check "a malformed hook is an error" 1 th -y install hk-data
+has "with the file and line" "60-bad.hook:2: unknown key 'Color'"
+[ ! -e "$HK/usr/share/hk-data/f" ] && ok "and it stopped the transaction before anything was installed" || bad "package installed despite the malformed hook"
+rm "$HK/etc/tatami/hooks.d/60-bad.hook"
+printf 'Exec = true\n' > "$HK/etc/tatami/hooks.d/61-notrigger.hook"
+check "a hook without a Trigger is an error" 1 th -y install hk-data
+has "naming the hook" "61-notrigger.hook: hook has no Trigger"
+rm "$HK/etc/tatami/hooks.d/61-notrigger.hook"
+# the shipped ldconfig hook, for real, inside the scratch root
+rm -f "$HK/etc/tatami/hooks.d/"*.hook "$HK/hook.log"
+if [ -x /sbin/ldconfig ] && [ -f "$PWD/hooks/ldconfig.hook" ]; then
+	cp "$PWD/hooks/ldconfig.hook" "$HK/etc/tatami/hooks.d/"
+	th -y remove hk-lib hk-lib2 hk-data >/dev/null 2>&1
+	OUT=$(th -y install hk-lib 2>&1)
+	hasnt "the shipped ldconfig hook needs etc/ld.so.conf, which the root lacks: it does not run" "Running hook ldconfig"
+	: > "$HK/etc/ld.so.conf"
+	th -y remove hk-lib >/dev/null 2>&1
+	OUT=$(th -y install hk-lib 2>&1)
+	has "with etc/ld.so.conf in the root the shipped hook runs" "Running hook ldconfig"
+	[ -e "$HK/etc/ld.so.cache" ] && ok "ldconfig -r <root> built the cache inside the root" || bad "no ld.so.cache in the root" "$OUT"
+	[ "$(stat -c %Y /etc/ld.so.cache 2>/dev/null)" = "$ldcache" ] && ok "and not the host's" || bad "host ld.so.cache changed by the hook"
+else
+	echo "skip - the shipped ldconfig hook (no /sbin/ldconfig)"
+fi
+
 echo "# file names: <name>_<version>.<ext>"
 mkpkg libfoo-dev 2.0 "depends=libfoo >= 1.0" file=usr/include/foo.h
-[ -f "$REPO/libfoo-dev_2.0-1.$EXT" ] && ok "name with a hyphen: libfoo-dev_2.0-1.$EXT" || bad "hyphenated package file name" "$(ls "$REPO")"
+[ -f "$REPO/libfoo-dev_2.0-1_$HARCH.$EXT" ] && ok "name with a hyphen: libfoo-dev_2.0-1_$HARCH.$EXT" || bad "hyphenated package file name" "$(ls "$REPO")"
 check "update indexes it under the right name" 0 t update
 check "search finds the hyphenated name" 0 t search '^libfoo-dev$'
 has "name and version taken apart correctly" "^libfoo-dev/2.0-1"
-cp "$REPO/ed_1.0-1.$EXT" "$REPO/renamed_9.9-1.$EXT"
+cp "$REPO/ed_1.0-1_$HARCH.$EXT" "$REPO/renamed_9.9-1_$HARCH.$EXT"
 check "update with a misnamed file" 0 t update
-has "warns that the name differs from the contents" "renamed_9.9-1.$EXT is named differently from its contents \(ed_1.0-1"
-rm -f "$REPO/renamed_9.9-1.$EXT"; t update >/dev/null 2>&1
+has "warns that the name differs from the contents" "renamed_9.9-1_$HARCH.$EXT is named differently from its contents \(ed_1.0-1_$HARCH"
+rm -f "$REPO/renamed_9.9-1_$HARCH.$EXT"; t update >/dev/null 2>&1
 mkdir -p "$T/recipes/under_score"
 printf 'name=under_score\nversion=1\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/under_score/Tatamifile"
 check "tatamk refuses '_' in a package name" 1 "$TATAMK" -c "$CONF" -f "$T/recipes/under_score/Tatamifile" -o "$T/failout"
@@ -702,8 +980,10 @@ with tarfile.open(t + "/db." + ext, "w:gz") as tf:
     add(tf, ".META", b"name: dbp\nversion: 1\n")
     add(tf, "var/lib/tatami/db", b"corrupt")
 PY
-check "write through an escaping symlink is refused" 1 ty install "$T/sym.$EXT"
-[ ! -e "$T/outside/pwned" ] && ok "nothing written outside the root via symlink" || bad "file written outside the root via symlink"
+# the package's symlink points at an absolute host path; inside the root that path means <root>/<path>
+check "a package symlink with an absolute target is confined to the root" 0 ty install "$T/sym.$EXT"
+[ ! -e "$T/outside/pwned" ] && ok "nothing was written to the host through the symlink" || bad "file written outside the root via symlink"
+[ -f "$ROOT$T/outside/pwned" ] && ok "the write went to the same path inside the root instead" || bad "write did not land inside the root" "$(find "$ROOT" -name pwned)"
 check "newline in a member name is refused" 1 ty install "$T/nl.$EXT"
 check "package may not overwrite the database" 1 ty install "$T/db.$EXT"
 check "empty root argument is refused" 1 "$TATAMI" -r "" list

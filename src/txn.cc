@@ -1,6 +1,7 @@
 #include "txn.h"
 #include "db.h"
 #include "paths.h"
+#include "rootfs.h"
 #include "util.h"
 #include <iostream>
 #include <fstream>
@@ -10,10 +11,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#define JOURNAL_FILE    "var/lib/tatami/transaction.journal"
-
-txn::txn(const string& root)
-	: root_(root), journal_(root + JOURNAL_FILE), fd_(-1), counter_(0)
+txn::txn(const string& journal)
+	: journal_(journal), fd_(-1), counter_(0)
 {
 }
 
@@ -43,7 +42,7 @@ void txn::append(const string& line)
 
 void txn::begin(const string& name, const string& version)
 {
-	mkdir_p(root_ + PKG_DIR);
+	mkdir_p(journal_.substr(0, journal_.rfind('/')));
 	fd_ = open(journal_.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
 	if (fd_ == -1)
 		throw runtime_error_with_errno("could not create " + journal_);
@@ -182,7 +181,7 @@ void txn::commit()
 
 bool txn::recover(const string& root, ostream& out)
 {
-	const string journal = root + JOURNAL_FILE;
+	const string journal = root_resolve(root, JOURNAL_FILE);
 	ifstream in(journal.c_str());
 	if (!in)
 		return false;

@@ -23,7 +23,8 @@
 #            make DESTDIR=$PKG install
 #    }
 #
-#  $SRC is the unpacked source directory, $PKG the package root.
+#  $SRC is the unpacked source directory, $PKG the package root. The result is
+#  <name>_<version>-<release>_<arch>.tar.<compression>, e.g. zlib_1.3.2-1_x86_64.tar.zst
 #
 
 TATAMI_CONF="/etc/tatami.conf"
@@ -40,13 +41,15 @@ print_help() {
 	echo "  -f, --file <recipe>   recipe to build (default: Tatamifile)"
 	echo "  -o, --output <dir>    where to put the package (default: current directory)"
 	echo "  -c, --config <file>   use alternative configuration file"
+	echo "  -z, --compression <c> gz, zst (default), xz, bz2, lz4, lzma or none"
 	echo "  -k, --keep-work       do not remove the work directory"
 	echo "      --no-bulkhead     build on the host, without the bwrap sandbox"
 	echo "                        (alias --no-sandbox; or BULKHEAD=no in tatami.conf)"
 	echo "      --bulkhead        force the sandbox even if tatami.conf disables it"
 	echo "  -v, --version         print version and exit"
-	echo "package extension: default @DEFAULT_PKG_EXT@, overridden by PKG_EXT in the"
-	echo "configuration file, then by the PKG_EXT environment variable"
+	echo "packages are named <name>_<version>-<release>_<arch>.<extension>; the extension is"
+	echo "tar.<compression> unless PKG_EXT is set (default '@DEFAULT_PKG_EXT@', then the configuration"
+	echo "file, then the PKG_EXT environment variable)"
 	echo "  -h, --help            print help and exit"
 }
 
@@ -70,6 +73,7 @@ join_deps() {
 RECIPE="Tatamifile"
 OUTDIR="$PWD"
 KEEP_WORK="no"
+COMPRESSION_OPT=""
 BULKHEAD_OPT=""
 TATAMI="${TATAMI:-tatami}"     # the tatami binary providing 'bulkhead'
 
@@ -78,6 +82,7 @@ while [ $# -gt 0 ]; do
 	-f|--file) [ -n "$2" ] || die "option $1 requires an argument"; RECIPE="$2"; shift ;;
 	-o|--output) [ -n "$2" ] || die "option $1 requires an argument"; OUTDIR="$2"; shift ;;
 	-c|--config) [ -n "$2" ] || die "option $1 requires an argument"; TATAMI_CONF="$2"; shift ;;
+	-z|--compression) [ -n "$2" ] || die "option $1 requires an argument"; COMPRESSION_OPT="$2"; shift ;;
 	-k|--keep-work) KEEP_WORK="yes" ;;
 	--no-bulkhead|--no-sandbox) BULKHEAD_OPT="no" ;;
 	--bulkhead) BULKHEAD_OPT="yes" ;;
@@ -94,27 +99,37 @@ done
 v=$(conf_get PKG_EXT)
 [ -n "$v" ] && PKG_EXT="${v#.}"
 [ -n "$ENV_PKG_EXT" ] && PKG_EXT="${ENV_PKG_EXT#.}"
-COMPRESSION=$(conf_get PKG_COMPRESSION)
+case "$PKG_EXT" in
+*[!A-Za-z0-9._-]*) die "invalid PKG_EXT '$PKG_EXT'" ;;
+esac
+
+# Compression: option, then tatami.conf, then what a configured extension ends in, then zstd.
+# It is done by 'tatami pack' with libarchive: no tar or compression program is used.
+COMPRESSION="${COMPRESSION_OPT:-$(conf_get PKG_COMPRESSION)}"
 if [ -z "$COMPRESSION" ]; then
 	case "$PKG_EXT" in
 	*gz) COMPRESSION=gz ;;
 	*xz) COMPRESSION=xz ;;
 	*zst) COMPRESSION=zst ;;
 	*bz2) COMPRESSION=bz2 ;;
-	*) COMPRESSION=gz ;;
+	*lz4) COMPRESSION=lz4 ;;
+	*lzma) COMPRESSION=lzma ;;
+	*) COMPRESSION=zst ;;
 	esac
 fi
 case "$COMPRESSION" in
-gz|xz|zst|bz2|none) ;;
-*) die "invalid PKG_COMPRESSION '$COMPRESSION' (use gz, xz, zst, bz2 or none)" ;;
+gz|xz|zst|bz2|lz4|lzma|none) ;;
+*) die "invalid compression '$COMPRESSION' (use gz, zst, xz, bz2, lz4, lzma or none)" ;;
 esac
-case "$PKG_EXT" in
-""|*[!A-Za-z0-9._-]*) die "invalid PKG_EXT '$PKG_EXT'" ;;
-esac
-if [ "$COMPRESSION" != none ]; then
-	case "$COMPRESSION" in gz) tool=gzip ;; zst) tool=zstd ;; bz2) tool=bzip2 ;; *) tool=$COMPRESSION ;; esac
-	command -v "$tool" >/dev/null 2>&1 || die "compression program '$tool' not found"
+# The file extension: the configured one, or tar.<compression>
+if [ -n "$PKG_EXT" ]; then
+	PKG_EXTENSION="$PKG_EXT"
+elif [ "$COMPRESSION" = none ]; then
+	PKG_EXTENSION="tar"
+else
+	PKG_EXTENSION="tar.$COMPRESSION"
 fi
+command -v "$TATAMI" >/dev/null 2>&1 || die "tatamk needs the tatami binary to create packages ('$TATAMI' not found in PATH; set TATAMI=/path/to/tatami)"
 BULKHEAD="${BULKHEAD_OPT:-$(conf_get BULKHEAD)}"
 BULKHEAD="${BULKHEAD:-yes}"
 case "$BULKHEAD" in
@@ -124,9 +139,9 @@ esac
 if [ "$BULKHEAD" = yes ]; then
 	command -v bwrap >/dev/null 2>&1 || die "isolated builds require bwrap (bubblewrap), which was not found in PATH.
          Install bubblewrap, or build without isolation using --no-bulkhead (or BULKHEAD=no in tatami.conf)."
-	command -v "$TATAMI" >/dev/null 2>&1 || die "isolated builds need the tatami binary ('$TATAMI' not found in PATH; set TATAMI=/path/to/tatami)"
 fi
 ARCH=$(conf_get ARCH)
+ARCH="${ARCH%%:*}"             # ARCH may list several (x86_64:i686): the first is the primary one
 [ -n "$ARCH" ] || ARCH=$(uname -m)
 
 RECIPE_DIR=$(cd "$(dirname "$RECIPE")" && pwd) || die "cannot enter recipe directory"
@@ -156,7 +171,14 @@ case "$name" in [!A-Za-z0-9]*) die "name must start with a letter or digit" ;; e
 pkgversion="$version"
 [ -n "$release" ] && pkgversion="$version-$release"
 pkgarch="${arch:-$ARCH}"
-PKGFILE="${name}_${pkgversion}.$PKG_EXT"
+# noarch, all and any (any case) are the same: not tied to an architecture
+case "$(printf '%s' "$pkgarch" | tr 'A-Z' 'a-z')" in
+noarch|all|any) pkgarch=noarch ;;
+esac
+case "$pkgarch" in
+""|*[!A-Za-z0-9_.-]*) die "invalid arch '$pkgarch'" ;;
+esac
+PKGFILE="${name}_${pkgversion}_${pkgarch}.$PKG_EXTENSION"
 
 WORK="$RECIPE_DIR/work"
 SRC="$WORK/src"
@@ -247,28 +269,10 @@ fi
 
 info "Creating $PKGFILE"
 rm -f "$PKG/.META"
-(
-	set -e -o pipefail
-	cd "$PKG"
-	{ echo .META; find . -mindepth 1 -printf '%P\n' | LC_ALL=C sort; } > "$WORK/filelist"
-	cp "$WORK/.META" "$PKG/.META"
-	tar --numeric-owner --no-recursion --verbatim-files-from -T "$WORK/filelist" -cf "$WORK/package.tar"
-)
-rc=$?
-if [ $rc -eq 0 ]; then
-	case "$COMPRESSION" in
-	gz) gzip -9n -c "$WORK/package.tar" ;;
-	xz) xz -T0 -c "$WORK/package.tar" ;;
-	zst) zstd -19 -T0 -q -c "$WORK/package.tar" ;;
-	bz2) bzip2 -c "$WORK/package.tar" ;;
-	none) cat "$WORK/package.tar" ;;
-	esac > "$OUTDIR/$PKGFILE.part"
-	rc=$?
-fi
-if [ $rc -ne 0 ]; then
+"$TATAMI" pack -z "$COMPRESSION" "$WORK/.META" "$PKG" "$OUTDIR/$PKGFILE.part" || {
 	rm -f "$OUTDIR/$PKGFILE.part"
 	die "could not create package"
-fi
+}
 mv "$OUTDIR/$PKGFILE.part" "$OUTDIR/$PKGFILE" || die "could not create package"
 
 info "Built $OUTDIR/$PKGFILE"

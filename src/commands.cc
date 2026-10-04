@@ -5,6 +5,7 @@
 #include "paths.h"
 #include "pkgarchive.h"
 #include "resolver.h"
+#include "rootfs.h"
 #include "txn.h"
 #include "util.h"
 #include <algorithm>
@@ -18,6 +19,7 @@
 #include <regex.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 namespace {
 
@@ -27,12 +29,8 @@ namespace {
 
 bool is_package_file(const context& ctx, const string& arg)
 {
-	return arg.find('/') != string::npos || ends_with(arg, "." + ctx.cfg.pkg_ext);
-}
-
-string index_path(const context& ctx)
-{
-	return trim_filename(ctx.opt.root + "/" + PKG_INDEX);
+	return arg.find('/') != string::npos ||
+		has_package_extension(arg, package_extensions(ctx.cfg.pkg_ext));
 }
 
 struct regex_guard {
@@ -90,119 +88,147 @@ bool confirm(const context& ctx)
 }
 
 //
-// Repository index
+// Repositories
+//
+// A repository is a directory of packages. If it holds a repo.solv (written by
+// 'tatami index') that binary index is loaded; otherwise the packages are
+// scanned, which is slower but always right. The directories come from
+// REPO_DIRS in the configuration (plain paths or file:// URLs); without any the
+// default is <root>/var/lib/tatami/packages.
 //
 
-// Scans the configured repositories. Returns the number of readable ones in
-// 'readable'. Unreadable packages are skipped with a warning.
-vector<pkgmeta> scan_repos(const context& ctx, bool verbose, size_t& readable)
+// The directories to use, with file:// stripped. Network URLs are refused: no
+// HTTP client is built in.
+vector<string> repository_dirs(const context& ctx)
+{
+	vector<string> specs = ctx.cfg.repo_dirs;
+	vector<string> dirs;
+
+	if (specs.empty())
+		specs.push_back(root_resolve(ctx.opt.root, DEFAULT_REPO_REL));
+
+	for (size_t i = 0; i < specs.size(); i++) {
+		string d = specs[i];
+		if (starts_with(d, "file://"))
+			d.erase(0, 7);
+		if (d.find("://") != string::npos)
+			throw runtime_error("repository " + specs[i] + ": network repositories are not supported "
+					    "(tatami has no HTTP client); use a directory or a file:// URL");
+		dirs.push_back(d);
+	}
+
+	return dirs;
+}
+
+// Reads the .META of every package in 'dir'. Packages that cannot be read are
+// skipped with a warning.
+vector<pkgmeta> scan_dir(const context& ctx, const string& dir)
 {
 	vector<pkgmeta> index;
-	const string suffix = "." + ctx.cfg.pkg_ext;
+	const vector<string> exts = package_extensions(ctx.cfg.pkg_ext);
 	set<string> seen;
 
-	readable = 0;
-	for (size_t r = 0; r < ctx.cfg.repo_dirs.size(); r++) {
-		const string& dir = ctx.cfg.repo_dirs[r];
-		DIR* d = opendir(dir.c_str());
-		if (!d) {
-			cerr << "tatami: warning: could not read repository " << dir << ": " << strerror(errno) << endl;
-			continue;
-		}
-		readable++;
+	DIR* d = opendir(dir.c_str());
+	if (!d)
+		throw runtime_error("could not read repository " + dir + ": " + strerror(errno));
 
-		vector<string> names;
-		struct dirent* de;
-		while ((de = readdir(d)))
-			if (ends_with(de->d_name, suffix) && string(de->d_name).size() > suffix.size())
-				names.push_back(de->d_name);
-		closedir(d);
-		sort(names.begin(), names.end());
+	vector<string> names;
+	struct dirent* de;
+	while ((de = readdir(d)))
+		if (has_package_extension(de->d_name, exts))
+			names.push_back(de->d_name);
+	closedir(d);
+	sort(names.begin(), names.end());
 
-		size_t count = 0;
-		for (size_t i = 0; i < names.size(); i++) {
-			try {
-				const string path = real_path(dir + "/" + names[i]);
-				struct stat st;
-				if (stat(path.c_str(), &st) == -1 || !S_ISREG(st.st_mode))
-					continue;
-				pkgmeta meta = pkg_read_meta(path);
-				meta.filename = path;
-				meta.size = st.st_size;
-				string fname, fversion;
-				if (!split_package_filename(path, ctx.cfg.pkg_ext, fname, fversion) ||
-				    fname != meta.name || fversion != meta.version)
-					cerr << "tatami: warning: " << path << " is named differently from its contents ("
-					     << meta.name << "_" << meta.version << "." << ctx.cfg.pkg_ext
-					     << "); the contents are used" << endl;
-				if (!seen.insert(meta.name + "_" + meta.version).second) {
-					cerr << "tatami: warning: skipping " << path << ": " << meta.name << " "
-					     << meta.version << " is already in the index" << endl;
-					continue;
-				}
-				index.push_back(meta);
-				count++;
-			} catch (runtime_error& e) {
-				cerr << "tatami: warning: skipping " << dir << "/" << names[i] << ": " << e.what() << endl;
+	for (size_t i = 0; i < names.size(); i++) {
+		try {
+			const string path = real_path(dir + "/" + names[i]);
+			struct stat st;
+			if (stat(path.c_str(), &st) == -1 || !S_ISREG(st.st_mode))
+				continue;
+			pkgmeta meta = pkg_read_meta(path);
+			meta.filename = path;
+			meta.size = st.st_size;
+			string fname, fversion, farch;
+			if (!split_package_filename(path, exts, fname, fversion, farch) ||
+			    fname != meta.name || fversion != meta.version ||
+			    (!meta.arch.empty() && canonical_arch(farch) != canonical_arch(meta.arch)))
+				cerr << "tatami: warning: " << path << " is named differently from its contents ("
+				     << meta.name << "_" << meta.version << "_"
+				     << (meta.arch.empty() ? string("<arch>") : canonical_arch(meta.arch))
+				     << ".<ext>); the contents are used" << endl;
+			if (!seen.insert(meta.name + "_" + meta.version + "_" + canonical_arch(meta.arch)).second) {
+				cerr << "tatami: warning: skipping " << path << ": " << meta.name << " "
+				     << meta.version << " is already in the repository" << endl;
+				continue;
 			}
+			index.push_back(meta);
+		} catch (runtime_error& e) {
+			cerr << "tatami: warning: skipping " << dir << "/" << names[i] << ": " << e.what() << endl;
 		}
-		if (verbose)
-			cout << "Repository " << dir << ": " << count << " package" << (count == 1 ? "" : "s") << endl;
 	}
 
 	return index;
 }
 
-void write_index(const context& ctx, const vector<pkgmeta>& index)
+bool newer_than(const struct stat& a, const struct stat& b)
 {
-	const string path = index_path(ctx);
-	const string tmp = path + ".tmp";
-	mkdir_p(trim_filename(ctx.opt.root + "/" + PKG_DIR));
-
-	ofstream out(tmp.c_str());
-	for (size_t i = 0; i < index.size(); i++)
-		out << format_meta(index[i]) << "\n";
-	out.close();
-	if (!out) {
-		int e = errno;
-		unlink(tmp.c_str());
-		throw runtime_error_with_errno("could not write " + path, e);
-	}
-	if (rename(tmp.c_str(), path.c_str()) == -1) {
-		int e = errno;
-		unlink(tmp.c_str());
-		throw runtime_error_with_errno("could not write " + path, e);
-	}
+	return a.st_mtim.tv_sec > b.st_mtim.tv_sec ||
+	       (a.st_mtim.tv_sec == b.st_mtim.tv_sec && a.st_mtim.tv_nsec > b.st_mtim.tv_nsec);
 }
 
-// The index is stale when it is missing or a repository directory changed
-// (package added or removed) after it was written.
-bool index_stale(const context& ctx)
+// Writes <dir>/repo.solv for the packages of 'dir'; returns how many
+size_t index_dir(const context& ctx, const string& dir)
 {
-	struct stat ist;
-	if (stat(index_path(ctx).c_str(), &ist) == -1)
-		return true;
+	vector<pkgmeta> entries = scan_dir(ctx, dir);
+	const string solv = dir + "/repo.solv";
+	const string tmp = solv + ".tmp";
 
-	for (size_t r = 0; r < ctx.cfg.repo_dirs.size(); r++) {
-		struct stat dst;
-		if (stat(ctx.cfg.repo_dirs[r].c_str(), &dst) == -1)
-			continue;
-		if (dst.st_mtime >= ist.st_mtime)
-			return true;
+	resolver::write_solv(dir, entries, tmp);
+	if (rename(tmp.c_str(), solv.c_str()) == -1) {
+		const int e = errno;
+		unlink(tmp.c_str());
+		throw runtime_error_with_errno("could not write " + solv, e);
 	}
+	// The index must not look older than the directory it was just written to
+	utimensat(AT_FDCWD, solv.c_str(), 0, 0);
 
-	return false;
+	return entries.size();
+}
+
+// Adds every configured repository to the solver
+void load_repositories(const context& ctx, resolver& res)
+{
+	const vector<string> dirs = repository_dirs(ctx);
+
+	for (size_t i = 0; i < dirs.size(); i++) {
+		struct stat dst;
+		if (stat(dirs[i].c_str(), &dst) == -1 || !S_ISDIR(dst.st_mode)) {
+			cerr << "tatami: warning: could not read repository " << dirs[i] << ": " << strerror(errno) << endl;
+			continue;
+		}
+
+		const string solv = dirs[i] + "/repo.solv";
+		struct stat sst;
+		if (stat(solv.c_str(), &sst) == 0) {
+			if (!newer_than(dst, sst)) {
+				res.add_repo_solv(dirs[i], solv);
+				continue;
+			}
+			cerr << "tatami: warning: " << solv << " is older than the packages in " << dirs[i]
+			     << ", scanning them instead (run 'tatami index " << dirs[i] << "')" << endl;
+		}
+		res.add_repo(dirs[i], scan_dir(ctx, dirs[i]));
+	}
 }
 
 // Everything a command needs: database (locked), solver loaded with the
-// installed packages and the repository index. The index is refreshed
-// automatically when the repositories changed, so no separate 'update' is
-// needed before install/upgrade/search.
+// installed packages and the repositories.
 struct session {
 	unique_ptr<db_lock> lock;
 	database db;
 	unique_ptr<resolver> res;
-	vector<pkgmeta> index;
+	vector<pkgmeta> index;          // what the repositories offer
 
 	session(const context& ctx, bool exclusive, bool need_index)
 		: db(ctx.opt.root)
@@ -216,18 +242,8 @@ struct session {
 		res.reset(new resolver(ctx.arch));
 		res->add_installed(db.packages(), db);
 		if (need_index) {
-			if (index_stale(ctx)) {
-				size_t readable;
-				index = scan_repos(ctx, false, readable);
-				// Persist it when we are allowed to; otherwise use it in memory
-				if (exclusive && readable) {
-					write_index(ctx, index);
-					cerr << "tatami: package index refreshed (" << index.size() << " packages)" << endl;
-				}
-			} else {
-				index = read_index(index_path(ctx));
-			}
-			res->add_available(index);
+			load_repositories(ctx, *res);
+			index = res->available_meta();
 		}
 	}
 };
@@ -336,6 +352,7 @@ void run_transaction(const context& ctx, session& s, const char* verb,
 		throw runtime_error("aborted");
 
 	engine eng(ctx.cfg, s.db, ctx.opt.force);
+	eng.check_hooks();      // a malformed hook must stop us before the system is changed
 	for (size_t i = 0; i < plan.size(); i++) {
 		const plan_step& st = plan[i];
 		switch (st.kind) {
@@ -354,7 +371,7 @@ void run_transaction(const context& ctx, session& s, const char* verb,
 		}
 	}
 
-	eng.ldconfig();
+	eng.run_hooks();
 	mark_requested_explicit(ctx, s);
 	cout << "Done." << endl;
 }
@@ -381,7 +398,7 @@ void cmd_install(context& ctx)
 				s.res->want_install(arg);
 			} catch (runtime_error& e) {
 				if (s.index.empty() && string(e.what()).find("unable to locate") == 0)
-					throw runtime_error(string(e.what()) + " (the package index is empty, try 'tatami update')");
+					throw runtime_error(string(e.what()) + " (no repository offers any package: check REPO_DIRS in tatami.conf)");
 				throw;
 			}
 		}
@@ -413,29 +430,39 @@ void cmd_upgrade(context& ctx)
 }
 
 //
-// update: build the repository index explicitly
+// index / update: write the binary repository index
 //
+
+void cmd_index(context& ctx)
+{
+	require_args(ctx, "repository directory");
+
+	for (size_t i = 0; i < ctx.args.size(); i++) {
+		string dir = ctx.args[i];
+		if (starts_with(dir, "file://"))
+			dir.erase(0, 7);
+		const size_t n = index_dir(ctx, dir);
+		cout << "Indexed " << n << " package" << (n == 1 ? "" : "s") << " in " << dir << "/repo.solv" << endl;
+	}
+}
 
 void cmd_update(context& ctx)
 {
-	if (ctx.opt.simulate) {
-		size_t readable;
-		vector<pkgmeta> index = scan_repos(ctx, true, readable);
-		cout << "Would update the package index: " << index.size() << " package"
-		     << (index.size() == 1 ? "" : "s") << " available" << endl;
-		return;
+	const vector<string> dirs = repository_dirs(ctx);
+
+	for (size_t i = 0; i < dirs.size(); i++) {
+		try {
+			if (ctx.opt.simulate) {
+				const size_t n = scan_dir(ctx, dirs[i]).size();
+				cout << "Would index " << n << " package" << (n == 1 ? "" : "s") << " in " << dirs[i] << endl;
+			} else {
+				const size_t n = index_dir(ctx, dirs[i]);
+				cout << "Indexed " << n << " package" << (n == 1 ? "" : "s") << " in " << dirs[i] << "/repo.solv" << endl;
+			}
+		} catch (runtime_error& e) {
+			cerr << "tatami: warning: " << dirs[i] << ": " << e.what() << endl;
+		}
 	}
-
-	db_lock lock(ctx.opt.root, true);
-	size_t readable;
-	vector<pkgmeta> index = scan_repos(ctx, true, readable);
-
-	// Never replace a good index by an empty one because nothing was readable
-	if (!readable)
-		throw runtime_error("none of the repositories could be read, keeping the old package index");
-
-	write_index(ctx, index);
-	cout << "Package index updated: " << index.size() << " package" << (index.size() == 1 ? "" : "s") << " available" << endl;
 }
 
 //
@@ -671,7 +698,8 @@ void cmd_owns(context& ctx)
 }
 
 const command_t commands[] = {
-	{ "update",  0,      "update",                   "build the package index from the configured repositories", true,  cmd_update },
+	{ "update",  0,      "update",                   "(re)build the index of every configured repository",       false, cmd_update },
+	{ "index",   0,      "index <dir>...",           "write the repo.solv index of repository directories",      false, cmd_index },
 	{ "install", "add",  "install <pkg|file>...",    "install packages (and their dependencies) or upgrade them", true,  cmd_install },
 	{ "remove",  "rm",   "remove <package>...",      "remove packages, their dependents and unused dependencies", true,  cmd_remove },
 	{ "upgrade", 0,      "upgrade",                  "upgrade all installed packages",                           true,  cmd_upgrade },

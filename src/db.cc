@@ -1,6 +1,7 @@
 #include "db.h"
 #include "util.h"
 #include "paths.h"
+#include "rootfs.h"
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -13,7 +14,7 @@
 db_lock::db_lock(const string& root, bool exclusive)
 	: dir(0)
 {
-	const string dirname = trim_filename(root + "/" + PKG_DIR);
+	const string dirname = root_resolve(root, DB_DIR);
 
 	if (exclusive)
 		mkdir_p(dirname);
@@ -49,6 +50,11 @@ database::database(const string& root)
 {
 }
 
+string database::path(const string& rel) const
+{
+	return root_resolve(root_, rel);
+}
+
 const pkgmeta* database::meta(const string& name) const
 {
 	map<string, pkgmeta>::const_iterator i = metas_.find(name);
@@ -57,7 +63,7 @@ const pkgmeta* database::meta(const string& name) const
 
 void database::open(bool create)
 {
-	const string filename = root_ + PKG_DB;
+	const string filename = path(PKG_DB);
 
 	packages_.clear();
 	metas_.clear();
@@ -67,7 +73,7 @@ void database::open(bool create)
 		if (file_exists(filename))
 			throw runtime_error_with_errno("could not open " + filename);
 		if (create) {
-			mkdir_p(root_ + PKG_DIR);
+			mkdir_p(path(DB_DIR));
 			FILE* f = fopen(filename.c_str(), "a");
 			if (!f)
 				throw runtime_error_with_errno("could not create " + filename);
@@ -96,7 +102,7 @@ void database::open(bool create)
 
 	// Load stored metadata of installed packages
 	for (packages_t::const_iterator i = packages_.begin(); i != packages_.end(); ++i) {
-		ifstream mf((root_ + PKG_META_DIR + "/" + i->first).c_str());
+		ifstream mf((path(PKG_META_DIR) + "/" + i->first).c_str());
 		if (!mf)
 			continue;
 		pkgmeta m;
@@ -113,11 +119,11 @@ void database::open(bool create)
 
 void database::commit()
 {
-	const string dbfilename = root_ + PKG_DB;
+	const string dbfilename = path(PKG_DB);
 	const string dbfilename_new = dbfilename + ".incomplete_transaction";
 	const string dbfilename_bak = dbfilename + ".backup";
 
-	mkdir_p(root_ + PKG_DIR);
+	mkdir_p(path(DB_DIR));
 
 	// Remove failed transaction (if it exists)
 	if (unlink(dbfilename_new.c_str()) == -1 && errno != ENOENT)
@@ -154,18 +160,19 @@ void database::commit()
 		throw runtime_error_with_errno("could not write " + dbfilename_new);
 
 	// Metadata store: write metadata of installed packages, drop stale entries
-	mkdir_p(root_ + PKG_META_DIR);
+	const string meta_dir = path(PKG_META_DIR);
+	mkdir_p(meta_dir);
 	for (map<string, pkgmeta>::const_iterator i = metas_.begin(); i != metas_.end(); ++i) {
 		if (!has(i->first))
 			continue;
-		const string path = root_ + PKG_META_DIR + "/" + i->first;
-		const string tmp = path + ".tmp";
+		const string file = meta_dir + "/" + i->first;
+		const string tmp = file + ".tmp";
 		ofstream out(tmp.c_str());
 		out << format_meta(i->second);
 		out.close();
-		if (!out || rename(tmp.c_str(), path.c_str()) == -1) {
+		if (!out || rename(tmp.c_str(), file.c_str()) == -1) {
 			unlink(tmp.c_str());
-			throw runtime_error_with_errno("could not write " + path);
+			throw runtime_error_with_errno("could not write " + file);
 		}
 	}
 
@@ -181,7 +188,7 @@ void database::commit()
 	if (rename(dbfilename_new.c_str(), dbfilename.c_str()) == -1)
 		throw runtime_error_with_errno("could not rename " + dbfilename_new + " to " + dbfilename);
 
-	DIR* d = opendir((root_ + PKG_META_DIR).c_str());
+	DIR* d = opendir(meta_dir.c_str());
 	if (d) {
 		vector<string> stale;
 		struct dirent* de;
@@ -192,7 +199,7 @@ void database::commit()
 		}
 		closedir(d);
 		for (vector<string>::const_iterator i = stale.begin(); i != stale.end(); ++i)
-			unlink((root_ + PKG_META_DIR + "/" + *i).c_str());
+			unlink((meta_dir + "/" + *i).c_str());
 	}
 }
 
@@ -263,7 +270,17 @@ void database::remove_files(const set<string>& files) const
 {
 	// Reverse order: directory contents are removed before the directory
 	for (set<string>::const_reverse_iterator i = files.rbegin(); i != files.rend(); ++i) {
-		const string filename = root_ + *i;
+		const string filename = root_resolve(root_, *i);
+
+		// A package lists the directories it uses (lib/). If that is a symbolic
+		// link in this root (a usr-merged /lib -> usr/lib) it is part of the base
+		// system, not of the package: leave it, and what it points to, alone.
+		if ((*i)[i->length() - 1] == '/') {
+			struct stat st;
+			if (lstat(filename.c_str(), &st) == 0 && S_ISLNK(st.st_mode))
+				continue;
+		}
+
 		if (file_exists(filename) && remove(filename.c_str()) == -1) {
 			if (errno == ENOTEMPTY)
 				continue;
@@ -323,7 +340,7 @@ set<string> database::find_conflicts(const string& name, const set<string>& pkgf
 
 	// Find conflicting files in filesystem
 	for (set<string>::const_iterator i = pkgfiles.begin(); i != pkgfiles.end(); ++i) {
-		if (file_exists(root_ + *i))
+		if (file_exists(root_resolve(root_, *i)))
 			files.insert(*i);
 	}
 

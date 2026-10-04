@@ -11,20 +11,19 @@ VARDIR = /var/lib/tatami
 VERSION = 0.1.0
 NAME = tatami-$(VERSION)
 
-# The package file extension is a build-time default for both tools: tatami
-# gets it as -DDEFAULT_PKG_EXT, tatamk as the @DEFAULT_PKG_EXT@ substitution.
+# Packages are named <name>_<version>_<arch>.<extension>. By default the
+# extension is tar.<compression> (tar.zst, tar.xz, ...) and tatami accepts all of
+# them. A distribution can fix one extension for both tools instead:
+#   make PKG_EXT=myext
+# tatami gets it as -DDEFAULT_PKG_EXT, tatamk as the @DEFAULT_PKG_EXT@ substitution.
 # It can still be overridden when running: PKG_EXT in /etc/tatami.conf (both
 # tools) and, for tatamk only, the PKG_EXT environment variable.
-# Example for your own distribution:  make PKG_EXT=myext
-PKG_EXT ?= tar.pkg
+PKG_EXT ?=
 ifneq ($(shell printf '%s' '$(PKG_EXT)' | tr -d 'A-Za-z0-9._-'),)
 $(error PKG_EXT may only contain letters, digits, '.', '_' and '-')
 endif
 ifneq ($(filter .%,$(PKG_EXT)),)
 $(error PKG_EXT must not start with a dot)
-endif
-ifeq ($(strip $(PKG_EXT)),)
-$(error PKG_EXT must not be empty)
 endif
 
 # All third-party libraries are vendored as git submodules under deps/ (pinned
@@ -59,21 +58,35 @@ ZSTD_DIR   = $(DEPS_DIR)/zstd
 ZSTD_BUILD = $(ZSTD_DIR)/cmake-build
 ZSTD_A     = $(ZSTD_BUILD)/lib/libzstd.a
 
+XZ_DIR     = $(DEPS_DIR)/xz
+XZ_BUILD   = $(XZ_DIR)/cmake-build
+XZ_A       = $(XZ_BUILD)/liblzma.a
+
+BZIP2_DIR  = $(DEPS_DIR)/bzip2
+BZIP2_BUILD = $(BZIP2_DIR)/cmake-build
+BZIP2_A    = $(BZIP2_BUILD)/libbz2.a
+BZIP2_OBJS = $(addprefix $(BZIP2_BUILD)/,blocksort.o huffman.o crctable.o randtable.o compress.o decompress.o bzlib.o)
+
+LZ4_DIR    = $(DEPS_DIR)/lz4
+LZ4_BUILD  = $(LZ4_DIR)/cmake-build
+LZ4_A      = $(LZ4_BUILD)/liblz4.a
+
 LIBARCHIVE_DIR   = $(DEPS_DIR)/libarchive
 LIBARCHIVE_BUILD = $(LIBARCHIVE_DIR)/cmake-build
 LIBARCHIVE_A     = $(LIBARCHIVE_BUILD)/libarchive/libarchive.a
 
-DEP_ARCHIVES = $(LIBSOLV_A) $(LIBARCHIVE_A) $(ZSTD_A) $(ZLIB_A)
+DEP_ARCHIVES = $(LIBSOLV_A) $(LIBARCHIVE_A) $(XZ_A) $(BZIP2_A) $(LZ4_A) $(ZSTD_A) $(ZLIB_A)
 
 CXXFLAGS ?= -O2
 CXXFLAGS += -std=c++11 -Wall -Wextra -pedantic -D_GNU_SOURCE -DVERSION=\"$(VERSION)\" \
 	    -DDEFAULT_PKG_EXT=\"$(PKG_EXT)\" -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 \
 	    -isystem $(LIBSOLV_INC) \
 	    -isystem $(LIBARCHIVE_DIR)/libarchive \
-	    -isystem $(ZSTD_DIR)/lib -isystem $(ZLIB_DIR) -isystem $(ZLIB_BUILD)
+	    -isystem $(ZSTD_DIR)/lib -isystem $(ZLIB_DIR) -isystem $(ZLIB_BUILD) \
+	    -isystem $(XZ_DIR)/src/liblzma/api -isystem $(BZIP2_DIR) -isystem $(LZ4_DIR)/lib
 
-# The vendored archives are linked by path (libarchive needs zstd and zlib, so
-# they come after it); nothing is taken from the system or from pkg-config.
+# The vendored archives are linked by path (libarchive needs the compression
+# libraries, so they come after it); nothing is taken from the system or from pkg-config.
 LDLIBS += $(DEP_ARCHIVES)
 
 # make STATIC=yes for a statically linked binary
@@ -81,7 +94,7 @@ ifeq ($(STATIC),yes)
 LDFLAGS += -static
 endif
 
-SRCS = main.cc bulkhead.cc commands.cc engine.cc resolver.cc db.cc txn.cc pkgarchive.cc meta.cc config.cc util.cc
+SRCS = main.cc bulkhead.cc commands.cc engine.cc resolver.cc db.cc txn.cc rootfs.cc hooks.cc pack.cc pkgarchive.cc meta.cc config.cc util.cc
 OBJECTS = $(SRCS:%.cc=src/%.o)
 
 all: tatami tatamk
@@ -100,7 +113,7 @@ tatami: $(OBJECTS) $(DEP_ARCHIVES)
 # exist are not rebuilt.
 
 define check_submodule
-	@test -f $(1)/CMakeLists.txt || { \
+	@test -f $(1)/$(or $(2),CMakeLists.txt) || { \
 		echo "$(1) is empty: run 'git submodule update --init'" >&2; exit 1; }
 endef
 
@@ -149,12 +162,44 @@ $(ZSTD_BUILD)/Makefile:
 $(ZSTD_A): $(ZSTD_BUILD)/Makefile
 	$(MAKE) -C $(ZSTD_BUILD) libzstd_static
 
-# libarchive -> libarchive.a, with gzip (zlib) and zstd taken from the two
-# vendored libraries above. Everything else it can optionally use (xz, bzip2,
-# lz4, openssl, acl, xattr, xml, pcre, ...) is switched off, as are its
-# command line tools and tests, so it needs no other library; xz/bzip2/lzip
-# archives are then read through the external programs, if installed.
-$(LIBARCHIVE_BUILD)/Makefile: $(ZLIB_A) $(ZSTD_A)
+# xz -> liblzma.a (the library only: no command line tools, no translations, no threads)
+$(XZ_BUILD)/Makefile:
+	$(call check_submodule,$(XZ_DIR))
+	mkdir -p $(XZ_BUILD)
+	cd $(XZ_BUILD) && cmake $(XZ_DIR) -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+		-DXZ_TOOL_XZ=OFF -DXZ_TOOL_XZDEC=OFF -DXZ_TOOL_LZMADEC=OFF -DXZ_TOOL_LZMAINFO=OFF \
+		-DXZ_TOOL_SCRIPTS=OFF -DXZ_TOOL_SYMLINKS=OFF -DXZ_NLS=OFF -DXZ_THREADS=no \
+		-DBUILD_TESTING=OFF
+
+$(XZ_A): $(XZ_BUILD)/Makefile
+	$(MAKE) -C $(XZ_BUILD) liblzma
+
+# bzip2 has no CMake project at this release: its seven library sources are
+# compiled straight into libbz2.a, outside the source tree
+$(BZIP2_BUILD)/%.o: $(BZIP2_DIR)/%.c
+	$(call check_submodule,$(BZIP2_DIR),bzlib.c)
+	@mkdir -p $(BZIP2_BUILD)
+	$(CC) -O2 -D_FILE_OFFSET_BITS=64 -c $< -o $@
+
+$(BZIP2_A): $(BZIP2_OBJS)
+	$(AR) rcs $@ $(BZIP2_OBJS)
+
+# lz4 -> liblz4.a (library only)
+$(LZ4_BUILD)/Makefile:
+	$(call check_submodule,$(LZ4_DIR)/build/cmake)
+	mkdir -p $(LZ4_BUILD)
+	cd $(LZ4_BUILD) && cmake $(LZ4_DIR)/build/cmake -DCMAKE_BUILD_TYPE=Release \
+		-DBUILD_SHARED_LIBS=OFF -DLZ4_BUILD_CLI=OFF -DLZ4_BUILD_LEGACY_LZ4C=OFF
+
+$(LZ4_A): $(LZ4_BUILD)/Makefile
+	$(MAKE) -C $(LZ4_BUILD) lz4_static
+
+# libarchive -> libarchive.a with gzip (zlib), zstd, xz/lzma (liblzma), bzip2
+# and lz4, all taken from the vendored libraries above, so that reading and
+# writing every supported format is built in and needs no external program.
+# What it could optionally use besides (openssl, acl, xattr, xml, pcre, ...) is
+# switched off, as are its command line tools and tests.
+$(LIBARCHIVE_BUILD)/Makefile: $(ZLIB_A) $(ZSTD_A) $(XZ_A) $(BZIP2_A) $(LZ4_A)
 	$(call check_submodule,$(LIBARCHIVE_DIR))
 	mkdir -p $(LIBARCHIVE_BUILD)
 	cd $(LIBARCHIVE_BUILD) && cmake $(LIBARCHIVE_DIR) -DCMAKE_BUILD_TYPE=Release \
@@ -162,9 +207,13 @@ $(LIBARCHIVE_BUILD)/Makefile: $(ZLIB_A) $(ZSTD_A)
 		-DENABLE_TAR=OFF -DENABLE_CPIO=OFF -DENABLE_CAT=OFF -DENABLE_UNZIP=OFF \
 		-DENABLE_ZLIB=ON -DZLIB_INCLUDE_DIR=$(ZLIB_DIR) -DZLIB_LIBRARY=$(ZLIB_A) \
 		-DENABLE_ZSTD=ON -DZSTD_INCLUDE_DIR=$(ZSTD_DIR)/lib -DZSTD_LIBRARY=$(ZSTD_A) \
-		-DENABLE_LZMA=OFF -DENABLE_BZip2=OFF -DENABLE_LZ4=OFF -DENABLE_LZO=OFF \
-		-DENABLE_LIBB2=OFF -DENABLE_OPENSSL=OFF -DENABLE_MBEDTLS=OFF -DENABLE_NETTLE=OFF \
-		-DENABLE_LIBXML2=OFF -DENABLE_EXPAT=OFF -DENABLE_PCREPOSIX=OFF \
+		-DENABLE_LZMA=ON -DLIBLZMA_INCLUDE_DIR=$(XZ_DIR)/src/liblzma/api \
+		-DLIBLZMA_LIBRARY_RELEASE=$(XZ_A) -DLIBLZMA_LIBRARY=$(XZ_A) \
+		-DENABLE_BZip2=ON -DBZIP2_INCLUDE_DIR=$(BZIP2_DIR) \
+		-DBZIP2_LIBRARY_RELEASE=$(BZIP2_A) -DBZIP2_LIBRARIES=$(BZIP2_A) \
+		-DENABLE_LZ4=ON -DLZ4_INCLUDE_DIR=$(LZ4_DIR)/lib -DLZ4_LIBRARY=$(LZ4_A) \
+		-DENABLE_LZO=OFF -DENABLE_LIBB2=OFF -DENABLE_OPENSSL=OFF -DENABLE_MBEDTLS=OFF \
+		-DENABLE_NETTLE=OFF -DENABLE_LIBXML2=OFF -DENABLE_EXPAT=OFF -DENABLE_PCREPOSIX=OFF \
 		-DENABLE_PCRE2POSIX=OFF -DENABLE_LIBGCC=OFF -DENABLE_ACL=OFF -DENABLE_XATTR=OFF \
 		-DCMAKE_C_FLAGS=-I$(ZLIB_BUILD)
 
@@ -188,11 +237,12 @@ check: all
 
 # The filesystem skeleton is created with plain 'mkdir -p': directories that
 # already exist are left exactly as they are (mode, owner and contents), and
-# an existing configuration file is never overwritten. Binaries are replaced,
+# an existing configuration or hook file is never overwritten. Binaries are replaced,
 # as for any upgrade. The package database, index and metadata directories
 # below $(VARDIR) are created by tatami itself on first use.
 install: all
-	mkdir -p $(DESTDIR)$(BINDIR) $(DESTDIR)$(ETCDIR) $(DESTDIR)$(VARDIR)/packages
+	mkdir -p $(DESTDIR)$(BINDIR) $(DESTDIR)$(ETCDIR) $(DESTDIR)$(ETCDIR)/tatami/hooks.d \
+		$(DESTDIR)$(VARDIR)/packages $(DESTDIR)/var/lib/tatami
 	install -m0755 tatami $(DESTDIR)$(BINDIR)/tatami
 	install -m0755 tatamk $(DESTDIR)$(BINDIR)/tatamk
 	@if [ -e $(DESTDIR)$(ETCDIR)/tatami.conf ]; then \
@@ -200,11 +250,15 @@ install: all
 	else \
 		install -m0644 tatami.conf $(DESTDIR)$(ETCDIR)/tatami.conf; \
 	fi
-
-clean:
-	rm -f $(OBJECTS) $(OBJECTS:.o=.d)
+	@for h in hooks/*.hook; do \
+		if [ -e $(DESTDIR)$(ETCDIR)/tatami/hooks.d/$$(basename $$h) ]; then \
+			echo "keeping existing $(DESTDIR)$(ETCDIR)/tatami/hooks.d/$$(basename $$h)"; \
+		else \
+			install -m0644 $$h $(DESTDIR)$(ETCDIR)/tatami/hooks.d/; \
+		fi; \
+	done
 
 # 'clean' keeps the (slow to rebuild) vendored libraries; 'distclean' resets them too
 distclean: clean
 	rm -f tatami tatamk .flags
-	rm -rf $(LIBSOLV_BUILD) $(ZLIB_BUILD) $(ZSTD_BUILD) $(LIBARCHIVE_BUILD)
+	rm -rf $(LIBSOLV_BUILD) $(ZLIB_BUILD) $(ZSTD_BUILD) $(XZ_BUILD) $(BZIP2_BUILD) $(LZ4_BUILD) $(LIBARCHIVE_BUILD)

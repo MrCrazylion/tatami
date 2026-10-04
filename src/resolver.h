@@ -32,11 +32,25 @@ struct plan_step {
 // packages form the "installed" repository.
 class resolver {
 public:
+	// 'arch' is the architecture policy of the target system: "aarch64", or a
+	// list "x86_64:i686" for a multilib system. Packages of any other
+	// architecture are refused; noarch ones fit everywhere.
 	explicit resolver(const string& arch);
 	~resolver();
 
 	void add_installed(const packages_t& packages, const database& db);
-	void add_available(const vector<pkgmeta>& entries);
+
+	// A repository directory: 'entries' are its packages (their filename is
+	// the full path). Earlier repositories win when a version is in several.
+	void add_repo(const string& dir, const vector<pkgmeta>& entries);
+	// The same from the binary index repo.solv written by write_solv()
+	void add_repo_solv(const string& dir, const string& solv_file);
+	// Writes the binary libsolv index of a repository directory
+	static void write_solv(const string& dir, const vector<pkgmeta>& entries, const string& solv_file);
+
+	// Every package of every repository (not the installed ones), rebuilt from
+	// what libsolv holds
+	vector<pkgmeta> available_meta() const;
 	// Adds a package given on the command line, returns its solvable id
 	Id add_local(const pkgmeta& meta);
 
@@ -74,6 +88,8 @@ private:
 	resolver& operator=(const resolver&);
 
 	Id add_solvable(Repo* repo, const pkgmeta& meta);
+	Repo* new_repo(const string& dir);
+	string solvable_file(Id p) const;
 	void prepare();
 	void clear_solution();
 	void make_jobs(Queue* jobs) const;
@@ -85,7 +101,8 @@ private:
 
 	Pool* pool_;
 	Repo* installed_;
-	Repo* available_;
+	vector<Repo*> repos_;                   // repositories, best first
+	map<Repo*, string> repo_dir_;           // where their relative file names start
 	Repo* local_;
 	Queue job_;
 	Solver* solv_;

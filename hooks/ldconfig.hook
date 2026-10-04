@@ -1,0 +1,9 @@
+# Rebuild the shared library cache when libraries or its configuration changed.
+# This is an ordinary tatami hook (see README): nothing about ldconfig is built
+# into tatami itself, so a system that does not want it simply has no such file.
+
+Trigger   = ^(usr/)?lib(32|64|x32)?/
+Trigger   = ^etc/ld\.so\.conf
+Operation = install upgrade remove
+Needs     = etc/ld.so.conf
+Exec      = /sbin/ldconfig -r %ROOT%

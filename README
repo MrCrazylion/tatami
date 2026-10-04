@@ -46,7 +46,8 @@ Command line
 ------------
 tatami [options] <command> [arguments]
 
-  update                 build the package index from the configured repositories
+  index <dir>...         write the binary repo.solv index of repository directories
+  update                 do that for every configured repository
   install <pkg|file>...  install packages and their dependencies; installing
                          an installed package upgrades it. "name=version"
                          pins a version, a file argument installs that file
@@ -62,7 +63,10 @@ tatami [options] <command> [arguments]
   owns <regex>           find the package owning a file
 
 Options: -y (no questions), -s (simulate), -f (overwrite conflicting files),
--r <root>, -c <config file>.
+-r <root> (default /), -c <config file>.
+
+Also used by tatamk, not meant to be run by hand: 'tatami pack' (create a package
+archive in any of the supported compressions) and 'tatami bulkhead' (the sandbox).
 
 Everything operates below the root given with -r, so a package set can be
 tried out in a scratch directory.
@@ -110,13 +114,39 @@ installation of several packages, those that were completed before the failure
 stay installed.
 
 
-Package format and extension
-----------------------------
-A package is a tar archive (any compression libarchive reads: gz, bz2, xz,
-lzip, zstd). The file name is  <name>_<version>.<extension>  (split at the last '_', so
-names and versions may not contain '_'; hyphens are fine, e.g.
-libfoo-dev_2.0-1.tar.pkg) and the
-extension is chosen by the user (see "Custom package extension" below). tatami and tatamk both use it,
+Package format and names
+------------------------
+A package is a tar archive compressed with gzip, zstd, xz/lzma, bzip2 or lz4
+(or not at all). All of these are read and written by tatami itself: libarchive
+is built with zlib, zstd, liblzma, bzip2 and lz4, all vendored in deps/, so no
+tar, xz, bzip2 or other program on the host is involved (tatamk packs through
+'tatami pack'; unpacking the *source* tarballs of a recipe still uses the host's
+tar, since upstream sources can be anything).
+
+The file name is   <name>_<version>-<release>_<arch>.tar.<compression>
+for example        zlib_1.3.2-1_x86_64.tar.zst
+                   linux-api-headers_6.6-1_aarch64.tar.xz
+                   tzdata_2026a-1_noarch.tar.gz
+Name and version may not contain '_' (hyphens are fine), so the first two
+underscores are the separators and the architecture, which may contain one
+(x86_64), is everything after them. Inside the archive a metadata member named
+.META is not installed. It uses "key: value" lines:
+
+  name: example
+  version: 1.0-1
+  arch: x86_64               (noarch/all/any: installable everywhere)
+  description: Example tool
+  depends: libfoo, libbar >= 2.0, a | b
+  conflicts: example-git
+  provides: example-virtual
+  replaces: oldexample
+
+depends/conflicts use libsolv relations: name, "name >= version" (also <, <=,
+=, >), and "a | b" alternatives. "replaces" removes the named package (or what
+provides that name) when this one is installed.
+
+
+Custom package extension" below). tatami and tatamk both use it,
 so "tar.pkg", "tatami" are all fine. Files that do not end in
 the configured extension are not indexed.
 
@@ -139,16 +169,18 @@ this one is installed.
 
 Custom package extension
 ------------------------
-Anyone building their own distribution can bake in their own package
-extension, no source changes needed:
+By default the extension is tar.<compression> and tatami accepts every one. Anyone
+building their own distribution can fix a single extension instead, no source
+changes needed:
 
 $ make PKG_EXT=myext
 
 The one variable is used everywhere: tatami is compiled with
--DDEFAULT_PKG_EXT="myext" (it is what 'update' indexes and what a file argument
+-DDEFAULT_PKG_EXT="myext" (it is what indexing scans for and what a file argument
 is recognised by) and tatamk is generated from tatamk.in with @DEFAULT_PKG_EXT@
-replaced by "myext" (it names the packages it builds that way). The default is
-tar.pkg. The value may contain letters, digits, '.', '_' and '-' and no leading dot.
+replaced by "myext" (it names the packages it builds that way, <name>_<version>_<arch>.myext).
+Left empty, as by default, the names are tar.<compression>. The value may contain
+letters, digits, '.', '_' and '-' and no leading dot.
 
 The built-in value can be overridden when running, in this order of precedence:
   1. PKG_EXT in the environment (tatamk only)
@@ -206,20 +238,84 @@ tatamk refuses to build when bwrap is missing, unless you opt out with
 forces the sandbox over the config setting.
 
 
-Repositories
-------------
-A repository is a directory of package files. REPO_DIRS in tatami.conf lists
-them; "tatami update" scans them and writes the index (var/lib/tatami/index).
-Run it again whenever packages are added or removed.
+Repositories and the repo.solv index
+------------------------------------
+A repository is a directory of package files. REPO_DIRS in tatami.conf lists them
+(paths or file:// URLs; the first one listed wins when a version is in several;
+without REPO_DIRS it is <root>/var/lib/tatami/packages). Dependencies are
+resolved across all of them together, not just local files.
+
+$ tatami index /srv/packages          writes /srv/packages/repo.solv
+$ tatami update                       does that for every configured repository
+
+repo.solv is libsolv's own binary repository format: it holds each package's
+name, version, architecture, dependencies, conflicts, provides, replaces, size and
+file name. A directory that has one is read through it. If packages were added
+after it was written, tatami says so and scans the directory instead (so the
+result is never wrong, just slower) until you index again. A directory without a
+repo.solv is simply scanned. Network repositories (http://, https://) are not
+supported: tatami has no HTTP client built in and says so.
+
+
+Target root (--root)
+--------------------
+Every command takes -r <root> (default /). Everything tatami reads or writes
+belongs to that root and nothing outside it is touched:
+
+  <root>/var/lib/tatami/db                  the package database
+  <root>/var/lib/tatami/                   journal, install reasons, rejected files
+  <root>/etc/tatami.conf                   configuration
+  <root>/etc/tatami/hooks.d/               hooks
+  the files of the packages
+
+Symbolic links inside the root are followed as in a chroot: in a usr-merged root
+with /lib -> usr/lib, or even /lib -> /usr/lib (an absolute link), a package's
+lib/libfoo.so lands in <root>/usr/lib, never in the host's /usr/lib; ".." cannot
+climb out; removing the package removes the root's file, not the host's. A
+directory a package lists (lib/) that is a symbolic link in the root belongs to
+the base system and is never removed with the package. A symlink loop is an
+error. (Repository directories and the programs a hook runs are host paths: they
+are inputs, not part of the root.)
+
+
+Target architecture
+-------------------
+libsolv's pool is set to the target's architecture, ARCH in <root>/etc/tatami.conf
+(default: the machine's). Only that architecture and noarch packages can be
+installed or serve as dependencies; others are refused with "built for
+architecture X, which is incompatible with this system (Y)". ARCH=x86_64:i686
+allows both for a multilib system. tatamk puts the architecture (the recipe's
+arch=, else the first ARCH entry, else uname -m) into .META and the file name.
+
+
+Hooks
+-----
+What happens after a transaction is not built into tatami. A hook is a file
+<root>/etc/tatami/hooks.d/NAME.hook:
+
+  # rebuild the library cache when libraries changed
+  Trigger   = ^usr/lib/              POSIX extended regex on the changed paths
+  Trigger   = ^etc/ld\.so\.conf        (relative to the root, directories end in '/')
+  Operation = install upgrade remove optional, default all
+  Needs     = etc/ld.so.conf         optional: skipped unless this exists in the root
+  Exec      = /sbin/ldconfig -r %ROOT%    quotes work, no shell; %ROOT% is the root
+
+A hook runs once per transaction, after the database commit, if the transaction
+added, replaced or removed a path that matches a Trigger. TATAMI_ROOT is set in
+its environment. A failing hook is reported but does not undo anything. Hook files
+are checked before the transaction starts, so a malformed one changes nothing.
+'make install' installs hooks/ldconfig.hook, the example above.
 
 
 Files
 -----
 /etc/tatami.conf               settings and UPGRADE/INSTALL rules
-/var/lib/tatami/db             installed packages and their files
-/var/lib/tatami/meta/<name>    metadata of installed packages
-/var/lib/tatami/index          repository index
+/var/lib/tatami/db              installed packages and their files
+/var/lib/tatami/meta/<name>    metadata of installed packages, install reason
 /var/lib/tatami/rejected/      new versions of files that were kept (UPGRADE ... NO)
+/var/lib/tatami/transaction.journal   undo log of an installation in progress
+<repository>/repo.solv         binary index of a repository
+/etc/tatami/hooks.d/*.hook     post-transaction hooks
 
 
 Copyright

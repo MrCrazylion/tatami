@@ -14,7 +14,7 @@ config_t default_config()
 {
 	config_t cfg;
 	cfg.pkg_ext = DEFAULT_PKG_EXT;
-	cfg.repo_dirs.push_back(DEFAULT_REPO_DIR);
+	// no repository listed: <root>/var/lib/tatami/packages (worked out per root)
 	return cfg;
 }
 
@@ -25,7 +25,7 @@ static string check_ext(const string& value, const string& where)
 	while (!ext.empty() && ext[0] == '.')
 		ext.erase(0, 1);
 
-	if (ext.empty() || ext.find_first_not_of(
+	if (ext.find_first_not_of(
 	    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != string::npos)
 		throw runtime_error(where + "invalid PKG_EXT '" + value + "'");
 
@@ -74,8 +74,16 @@ config_t read_config(const string& filename, bool required)
 				if (!repos_set)
 					cfg.repo_dirs.clear();
 				repos_set = true;
-				vector<string> dirs = split(value, " \t:");
-				cfg.repo_dirs.insert(cfg.repo_dirs.end(), dirs.begin(), dirs.end());
+				// separated by blanks; a plain path list may also use ':' (not inside a URL)
+				vector<string> words = split(value, " \t");
+				for (size_t w = 0; w < words.size(); w++) {
+					if (words[w].find("://") != string::npos) {
+						cfg.repo_dirs.push_back(words[w]);
+					} else {
+						vector<string> dirs = split(words[w], ":");
+						cfg.repo_dirs.insert(cfg.repo_dirs.end(), dirs.begin(), dirs.end());
+					}
+				}
 			} else if (key == "ARCH") {
 				cfg.arch = value;
 			} else if (key == "BULKHEAD") {
@@ -83,7 +91,7 @@ config_t read_config(const string& filename, bool required)
 					throw runtime_error(where + "invalid BULKHEAD '" + value + "', should be yes or no");
 				cfg.bulkhead = value;
 			} else if (key == "PKG_COMPRESSION") {
-				if (value != "gz" && value != "xz" && value != "zst" && value != "bz2" && value != "none")
+				if (value != "gz" && value != "xz" && value != "zst" && value != "bz2" && value != "lz4" && value != "lzma" && value != "none")
 					throw runtime_error(where + "invalid PKG_COMPRESSION '" + value + "'");
 				cfg.compression = value;
 			} else {
