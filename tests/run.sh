@@ -993,6 +993,31 @@ check "unknown command" 1 t frobnicate
 check "unknown option" 1 t --frobnicate list
 check "version" 0 "$TATAMI" --version
 
+echo "# sensible defaults: nothing configured at all"
+DF="$T/defaults"; rm -rf "$DF"; mkdir -p "$DF/recipe" "$DF/out" "$DF/root"
+printf 'name=dflt\nversion=1.0\nbuild() { mkdir -p "$PKG/usr/bin"; echo hi > "$PKG/usr/bin/dflt"; }\n' > "$DF/recipe/Tatamifile"
+# no config file (-c points nowhere), no PKG_EXT, no compression, no arch in the recipe
+( cd "$DF/recipe" && env -u PKG_EXT "$TATAMK" -c "$DF/none.conf" --no-bulkhead -o "$DF/out" ) >"$DF/mk.log" 2>&1
+[ -f "$DF/out/dflt_1.0_$HARCH.tar.zst" ] && ok "default package is <name>_<version>_<uname -m>.tar.zst" || bad "default package name"
+check "tatami reads the unconfigured package" 0 bash -c "'$TATAMI' -r '$DF/root' -c '$DF/none.conf' show '$DF/out/dflt_1.0_$HARCH.tar.zst' >/dev/null || true"
+mkdir -p "$DF/root/etc"
+# default config missing, empty, unreadable -> internal defaults, default repository <root>/var/lib/tatami/packages
+mkdir -p "$DF/root/var/lib/tatami/packages"; cp "$DF/out/"* "$DF/root/var/lib/tatami/packages/"
+check "no etc/tatami.conf: update works" 0 "$TATAMI" -r "$DF/root" update
+check "no etc/tatami.conf: install from the default repository" 0 "$TATAMI" -y -r "$DF/root" install dflt
+[ -f "$DF/root/usr/bin/dflt" ] && ok "installed with no configuration and no hooks.d" || bad "file not installed"
+check "remove with no hooks.d directory" 0 "$TATAMI" -y -r "$DF/root" remove dflt
+: > "$DF/root/etc/tatami.conf"
+check "empty etc/tatami.conf" 0 "$TATAMI" -y -r "$DF/root" install dflt
+"$TATAMI" -y -r "$DF/root" remove dflt >/dev/null 2>&1
+if [ "$(id -u)" = 0 ]; then
+	: # root reads everything: an unreadable file cannot be simulated; a directory in its place instead
+	rm -f "$DF/root/etc/tatami.conf"; mkdir "$DF/root/etc/tatami.conf"
+	check "etc/tatami.conf is a directory: falls back to defaults" 0 "$TATAMI" -y -r "$DF/root" install dflt
+fi
+mkdir -p "$DF/root/etc/tatami/hooks.d"
+check "empty hooks.d directory" 0 "$TATAMI" -y -r "$DF/root" upgrade
 echo
+
 echo "$pass passed, $fail failed"
 [ $fail -eq 0 ]

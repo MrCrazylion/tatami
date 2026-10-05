@@ -2,11 +2,19 @@
 #  tatami - a package manager in the spirit of pkgutils
 #
 
-DESTDIR =
-BINDIR = /usr/bin
-MANDIR = /usr/share/man
-ETCDIR = /etc
-VARDIR = /var/lib/tatami
+# Install locations. Every one has a default and can be overridden on the
+# command line (make PREFIX=/opt/tatami SYSCONFDIR=/opt/etc install). They only
+# say where "make install" puts things; at run time tatami finds its files
+# relative to --root (default /): etc/tatami.conf, etc/tatami/hooks.d and
+# var/lib/tatami.
+DESTDIR ?=
+PREFIX ?= /usr
+SYSCONFDIR ?= /etc
+DB_DIR ?= /var/lib/tatami
+BINDIR ?= $(PREFIX)/bin
+MANDIR ?= $(PREFIX)/share/man
+ETCDIR ?= $(SYSCONFDIR)
+VARDIR ?= $(DB_DIR)
 
 VERSION = 0.1.0
 NAME = tatami-$(VERSION)
@@ -242,7 +250,7 @@ check: all
 # below $(VARDIR) are created by tatami itself on first use.
 install: all
 	mkdir -p $(DESTDIR)$(BINDIR) $(DESTDIR)$(ETCDIR) $(DESTDIR)$(ETCDIR)/tatami/hooks.d \
-		$(DESTDIR)$(VARDIR)/packages $(DESTDIR)/var/lib/tatami
+		$(DESTDIR)$(VARDIR)/packages $(DESTDIR)$(DB_DIR)
 	install -m0755 tatami $(DESTDIR)$(BINDIR)/tatami
 	install -m0755 tatamk $(DESTDIR)$(BINDIR)/tatamk
 	@if [ -e $(DESTDIR)$(ETCDIR)/tatami.conf ]; then \
