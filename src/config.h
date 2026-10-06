@@ -15,7 +15,12 @@ using namespace std;
 #ifndef DEFAULT_PKG_EXT
 #define DEFAULT_PKG_EXT         ""
 #endif
-#define TATAMI_CONF             "/etc/tatami.conf"
+#define TATAMI_CONF             "/etc/tatami/tatami.conf"
+// Downloads one remote file; used only for http://, https:// and ftp:// repositories.
+// %URL% and %DEST% are replaced; the command is run directly, not through a shell.
+// Its stderr is read by tatami, which draws the progress bar from the "NN.N%"
+// figures it prints (curl -#); nothing else of its output is shown.
+#define DEFAULT_FETCHCMD        "curl -f -L -# \"%URL%\" -o \"%DEST%\""
 #define CONF_MAXLINE            1024
 
 enum rule_event_t {
@@ -32,6 +37,7 @@ struct rule_t {
 struct config_t {
 	string pkg_ext;                 // without leading dot, empty: tar.<compression>
 	vector<string> repo_dirs;       // directories scanned by 'tatami update'
+	string fetchcmd;                // downloads remote repositories (FETCHCMD)
 	string arch;                    // empty: use the machine architecture
 	string bulkhead;                // tatamk only: "yes" or "no" (build isolation)
 	string compression;             // used by tatamk only: gz, xz, zst, bz2 or none

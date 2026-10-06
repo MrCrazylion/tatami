@@ -756,8 +756,8 @@ tr ba -y remove rp-dup >/dev/null 2>&1
 printf 'REPO_DIRS = file://%s\nBULKHEAD = no\n' "$RP/b" > "$RP/url.conf"
 check "a file:// URL is a repository" 0 tr url show rp-dup
 printf 'REPO_DIRS = https://example.invalid/repo\nBULKHEAD = no\n' > "$RP/http.conf"
-check "a network URL is refused clearly" 1 tr http list --available
-has "with the reason" "network repositories are not supported"
+check "an unfetched remote repository is skipped with a hint" 0 tr http list --available
+has "it says to run update" "has not been fetched yet, run 'tatami update'"
 printf 'BULKHEAD = no\n' > "$RP/default.conf"
 mkdir -p "$ROOT/var/lib/tatami/packages"
 mkp "$ROOT/var/lib/tatami/packages" rp-local 1.0 - - usr/share/rp-local/f:local
@@ -993,6 +993,145 @@ check "unknown command" 1 t frobnicate
 check "unknown option" 1 t --frobnicate list
 check "version" 0 "$TATAMI" --version
 
+echo "# remote repositories: FETCHCMD, repos.conf, cache"
+RR="$T/rem-root"; SRVDIR="$T/rem-srv"; FLOG="$T/rem-fetch.log"; export SRVDIR FLOG
+rm -rf "$RR" "$SRVDIR" "$FLOG"; mkdir -p "$RR/etc/tatami" "$SRVDIR/core"
+mkp "$SRVDIR/core" rm-app 1.0 - rm-lib usr/share/rm-app/f:app
+mkp "$SRVDIR/core" rm-lib 1.0 - - usr/share/rm-lib/f:lib
+"$TATAMI" index "$SRVDIR/core" >/dev/null
+# the "network": a fetch command that logs and copies from $SRVDIR instead of connecting
+cat > "$T/rem.conf" <<'CONF'
+BULKHEAD = no
+FETCHCMD = sh -c 'echo "$0" >> "$FLOG"; cp "$SRVDIR/${0#https://mirror.test/}" "$1"' %URL% %DEST%
+CONF
+rr() { "$TATAMI" -r "$RR" -c "$T/rem.conf" "$@"; }
+echo "core = https://mirror.test/core" > "$RR/etc/tatami/repos.conf"
+check "remote repository not fetched yet: skipped" 0 rr list --available
+has "with a hint" "has not been fetched yet"
+[ ! -e "$FLOG" ] && ok "list never ran FETCHCMD" || bad "FETCHCMD ran for list"
+check "update fetches the remote index" 0 rr update
+[ "$(cat "$FLOG")" = "https://mirror.test/core/repo.solv" ] && ok "FETCHCMD got the repo.solv URL" || bad "unexpected fetches" "$(cat "$FLOG")"
+[ "$(head -c 4 "$RR/var/lib/tatami/repos/core/repo.solv")" = SOLV ] && ok "index cached in <root>/var/lib/tatami/repos/core/" || bad "no cached index"
+check "install from the cached index" 0 rr -y install rm-app
+FILE="rm-app_1.0_${HARCH}"; ls "$RR/var/cache/tatami/packages/" | grep -q "^$FILE\." && ok "package downloaded to <root>/var/cache/tatami/packages" || bad "no cached package" "$(ls "$RR/var/cache/tatami/packages" 2>&1)"
+[ -f "$RR/usr/share/rm-app/f" ] && [ -f "$RR/usr/share/rm-lib/f" ] && ok "package and dependency installed" || bad "not installed"
+[ "$(grep -c '^https://mirror.test/core/rm-' "$FLOG")" = 2 ] && ok "both package URLs were built from the repository URL" || bad "package fetches" "$(cat "$FLOG")"
+rr -y remove rm-app rm-lib >/dev/null 2>&1
+: > "$FLOG"
+check "reinstall" 0 rr -y install rm-app
+[ ! -s "$FLOG" ] && ok "cached packages are reused, nothing downloaded again" || bad "downloaded again" "$(cat "$FLOG")"
+rr -y remove rm-app rm-lib >/dev/null 2>&1
+rm -rf "$RR/var/cache"; : > "$FLOG"
+check "simulate does not download" 0 rr -s install rm-app
+[ ! -s "$FLOG" ] && [ ! -e "$RR/var/cache/tatami/packages" ] && ok "nothing fetched when simulating" || bad "simulate fetched" "$(cat "$FLOG")"
+# a corrupt download is refused and leaves the system alone
+for f in "$SRVDIR"/core/rm-lib_1.0_*; do [ "${f##*/}" = repo.solv ] || printf garbage > "$f"; done
+check "a corrupt package download is refused" 1 rr -y install rm-lib
+[ ! -e "$RR/usr/share/rm-lib/f" ] && ok "nothing installed from it" || bad "installed garbage"
+# a repo.solv that is not an index must not replace the good one
+cp "$RR/var/lib/tatami/repos/core/repo.solv" "$T/good.solv"
+echo "<html>404</html>" > "$SRVDIR/core/repo.solv"
+rr update >/dev/null 2>&1
+has_o=$(rr update 2>&1); echo "$has_o" | grep -q "not a valid index" && ok "an invalid downloaded index is rejected" || bad "invalid index accepted" "$has_o"
+cmp -s "$T/good.solv" "$RR/var/lib/tatami/repos/core/repo.solv" && ok "the previous index was kept" || bad "index replaced"
+# a failing / missing fetch command
+printf 'BULKHEAD = no\nFETCHCMD = false %%URL%% %%DEST%%\n' > "$T/rem-fail.conf"
+check "update with a failing FETCHCMD only warns" 0 "$TATAMI" -r "$RR" -c "$T/rem-fail.conf" update
+printf 'BULKHEAD = no\nFETCHCMD = no-such-fetcher-xyz %%URL%% %%DEST%%\n' > "$T/rem-miss.conf"
+OUT=$("$TATAMI" -r "$RR" -c "$T/rem-miss.conf" update 2>&1); echo "$OUT" | grep -q "could not run no-such-fetcher-xyz" && ok "missing fetch program is reported" || bad "missing program" "$OUT"
+printf 'BULKHEAD = no\nFETCHCMD = curl %%URL%%\n' > "$T/rem-bad.conf"
+OUT=$("$TATAMI" -r "$RR" -c "$T/rem-bad.conf" update 2>&1); echo "$OUT" | grep -q "must contain %URL% and %DEST%" && ok "FETCHCMD without %DEST% is refused" || bad "bad FETCHCMD" "$OUT"
+# the default FETCHCMD is curl -f -L -# "%URL%" -o "%DEST%"
+printf 'BULKHEAD = no\n' > "$T/rem-def.conf"
+mkdir -p "$T/fakebin"; printf '#!/bin/sh\necho "$@" > "$FLOG"\nexit 1\n' > "$T/fakebin/curl"; chmod +x "$T/fakebin/curl"
+PATH="$T/fakebin:$PATH" "$TATAMI" -r "$RR" -c "$T/rem-def.conf" update >/dev/null 2>&1
+grep -q -- '^-f -L -# https://mirror.test/core/repo.solv -o .*/repos/core/repo.solv.part$' "$FLOG" && ok "default FETCHCMD is: curl -f -L -# URL -o DEST" || bad "default command" "$(cat "$FLOG")"
+# a hostile URL cannot run anything: the command is not started through a shell
+echo 'evil = https://mirror.test/x$(touch${IFS}'"$T"'/pwned)' > "$RR/etc/tatami/repos.conf"
+rr update >/dev/null 2>&1
+[ ! -e "$T/pwned" ] && ok "shell syntax in a URL is not executed" || bad "URL injection"
+# repos.conf format
+printf 'noequals\n' > "$RR/etc/tatami/repos.conf"
+check "a malformed repos.conf line is an error" 1 rr list --available
+printf 'a=/x\na=/y\n' > "$RR/etc/tatami/repos.conf"
+check "a repository defined twice is an error" 1 rr list --available
+printf 'x=gopher://h/p\n' > "$RR/etc/tatami/repos.conf"
+check "an unsupported URL scheme is refused" 1 rr list --available
+rm "$RR/etc/tatami/repos.conf"; mkdir -p "$RR/etc/tatami/repos.d"
+echo "core = https://mirror.test/core" > "$RR/etc/tatami/repos.d/10-core.conf"
+echo "# comment" > "$RR/etc/tatami/repos.d/20-none.conf"
+: > "$FLOG"; cp "$T/good.solv" "$SRVDIR/core/repo.solv"
+check "repos.d/*.conf is read" 0 rr update
+grep -q repo.solv "$FLOG" && ok "a repository from repos.d was fetched" || bad "repos.d ignored" "$(cat "$FLOG")"
+
+echo "# remote repositories: progress bar"
+cat > "$T/prog-fetch" <<'PF'
+#!/bin/sh
+# behaves like curl -#: progress on stderr, \r-separated, then the file
+printf '\r#####                  25.0%%' >&2
+printf '\r###########            50.0%%' >&2
+printf '\r######################100.0%%\n' >&2
+cp "$SRVDIR/${1#https://mirror.test/}" "$2"
+PF
+chmod +x "$T/prog-fetch"
+printf 'BULKHEAD = no\nFETCHCMD = %s %%URL%% %%DEST%%\n' "$T/prog-fetch" > "$T/prog.conf"
+echo "core = https://mirror.test/core" > "$RR/etc/tatami/repos.conf"; rm -rf "$RR/etc/tatami/repos.d"
+cp "$T/good.solv" "$SRVDIR/core/repo.solv" 2>/dev/null || "$TATAMI" index "$SRVDIR/core" >/dev/null
+rm -f "$SRVDIR"/core/rm-*_1.0_*; mkp "$SRVDIR/core" rm-app 1.0 - - usr/share/rm-app/f:app; "$TATAMI" index "$SRVDIR/core" >/dev/null
+PROGOUT=$(python3 - "$TATAMI" "$RR" "$T/prog.conf" <<'PY'
+import os, pty, sys, select
+tatami, root, conf = sys.argv[1:4]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(tatami, [tatami, "-r", root, "-c", conf, "-y", "update"])
+out = b""
+while True:
+    try:
+        d = os.read(fd, 4096)
+    except OSError:
+        break
+    if not d: break
+    out += d
+os.waitpid(pid, 0)
+sys.stdout.write(out.decode("utf-8", "replace").replace("\r", "<CR>"))
+PY
+)
+echo "$PROGOUT" | grep -q '\[=*>* *\]  *25%' && ok "a native bar is drawn from the parsed percentages (25%)" || bad "no bar at 25%" "$PROGOUT"
+echo "$PROGOUT" | grep -q '\[=\{30\}\] 100%' && ok "the bar ends full at 100%" || bad "no full bar" "$PROGOUT"
+echo "$PROGOUT" | grep -q '#' && bad "raw curl progress leaked through" "$PROGOUT" || ok "the raw progress text is hidden"
+OUT=$("$TATAMI" -r "$RR" -c "$T/prog.conf" update 2>&1)
+echo "$OUT" | grep -q '\[=' && bad "a bar was drawn without a terminal" "$OUT" || ok "no bar when stdout is not a terminal"
+echo "$OUT" | grep -q '#' && bad "raw text without terminal" "$OUT" || ok "raw progress hidden without a terminal too"
+printf '#!/bin/sh\necho "curl: (22) The requested URL returned error: 404" >&2\nexit 22\n' > "$T/fail-fetch"; chmod +x "$T/fail-fetch"
+printf 'BULKHEAD = no\nFETCHCMD = %s %%URL%% %%DEST%%\n' "$T/fail-fetch" > "$T/failmsg.conf"
+OUT=$("$TATAMI" -r "$RR" -c "$T/failmsg.conf" update 2>&1)
+echo "$OUT" | grep -q "exit status 22: curl: (22) The requested URL returned error: 404" && ok "a failing command's last message is in the error" || bad "no failure message" "$OUT"
+echo
+
+echo "# remote repositories: local ones never use FETCHCMD"
+rm -rf "$RR"; mkdir -p "$RR/etc/tatami" "$T/loc-repo"
+mkp "$T/loc-repo" lc-app 1.0 - - usr/share/lc-app/f:app
+: > "$FLOG"
+printf 'BULKHEAD = no\nFETCHCMD = sh -c '"'"'echo called >> "$FLOG"; exit 1'"'"' %%URL%% %%DEST%%\n' > "$T/loc.conf"
+lr() { "$TATAMI" -r "$RR" -c "$T/loc.conf" "$@"; }
+echo "mine = $T/loc-repo" > "$RR/etc/tatami/repos.conf"
+check "update of a local path repository" 0 lr update
+check "install from a local path repository" 0 lr -y install lc-app
+lr -y remove lc-app >/dev/null 2>&1
+echo "mine = file://$T/loc-repo" > "$RR/etc/tatami/repos.conf"
+check "install from a file:// repository" 0 lr -y install lc-app
+lr -y remove lc-app >/dev/null 2>&1
+rm "$RR/etc/tatami/repos.conf"; echo "" > "$RR/etc/tatami/repos.conf"
+mkdir -p "$RR/var/lib/tatami/packages"; cp "$T/loc-repo/"lc-app_* "$RR/var/lib/tatami/packages/"
+check "empty repos.conf: default <root>/var/lib/tatami/packages" 0 lr -y install lc-app
+lr -y remove lc-app >/dev/null 2>&1
+rm "$RR/etc/tatami/repos.conf"
+check "no repos.conf at all: default repository" 0 lr -y install lc-app
+[ -f "$RR/usr/share/lc-app/f" ] && ok "installed offline" || bad "not installed"
+[ ! -s "$FLOG" ] && ok "FETCHCMD was never started for a local repository" || bad "FETCHCMD ran" "$(cat "$FLOG")"
+[ ! -e "$RR/var/cache/tatami/packages" ] && ok "no package cache for local repositories" || bad "cache created"
+echo
+
 echo "# sensible defaults: nothing configured at all"
 DF="$T/defaults"; rm -rf "$DF"; mkdir -p "$DF/recipe" "$DF/out" "$DF/root"
 printf 'name=dflt\nversion=1.0\nbuild() { mkdir -p "$PKG/usr/bin"; echo hi > "$PKG/usr/bin/dflt"; }\n' > "$DF/recipe/Tatamifile"
@@ -1000,20 +1139,20 @@ printf 'name=dflt\nversion=1.0\nbuild() { mkdir -p "$PKG/usr/bin"; echo hi > "$P
 ( cd "$DF/recipe" && env -u PKG_EXT "$TATAMK" -c "$DF/none.conf" --no-bulkhead -o "$DF/out" ) >"$DF/mk.log" 2>&1
 [ -f "$DF/out/dflt_1.0_$HARCH.tar.zst" ] && ok "default package is <name>_<version>_<uname -m>.tar.zst" || bad "default package name"
 check "tatami reads the unconfigured package" 0 bash -c "'$TATAMI' -r '$DF/root' -c '$DF/none.conf' show '$DF/out/dflt_1.0_$HARCH.tar.zst' >/dev/null || true"
-mkdir -p "$DF/root/etc"
+mkdir -p "$DF/root/etc/tatami"
 # default config missing, empty, unreadable -> internal defaults, default repository <root>/var/lib/tatami/packages
 mkdir -p "$DF/root/var/lib/tatami/packages"; cp "$DF/out/"* "$DF/root/var/lib/tatami/packages/"
-check "no etc/tatami.conf: update works" 0 "$TATAMI" -r "$DF/root" update
-check "no etc/tatami.conf: install from the default repository" 0 "$TATAMI" -y -r "$DF/root" install dflt
+check "no etc/tatami/tatami.conf: update works" 0 "$TATAMI" -r "$DF/root" update
+check "no etc/tatami/tatami.conf: install from the default repository" 0 "$TATAMI" -y -r "$DF/root" install dflt
 [ -f "$DF/root/usr/bin/dflt" ] && ok "installed with no configuration and no hooks.d" || bad "file not installed"
 check "remove with no hooks.d directory" 0 "$TATAMI" -y -r "$DF/root" remove dflt
-: > "$DF/root/etc/tatami.conf"
-check "empty etc/tatami.conf" 0 "$TATAMI" -y -r "$DF/root" install dflt
+: > "$DF/root/etc/tatami/tatami.conf"
+check "empty etc/tatami/tatami.conf" 0 "$TATAMI" -y -r "$DF/root" install dflt
 "$TATAMI" -y -r "$DF/root" remove dflt >/dev/null 2>&1
 if [ "$(id -u)" = 0 ]; then
 	: # root reads everything: an unreadable file cannot be simulated; a directory in its place instead
-	rm -f "$DF/root/etc/tatami.conf"; mkdir "$DF/root/etc/tatami.conf"
-	check "etc/tatami.conf is a directory: falls back to defaults" 0 "$TATAMI" -y -r "$DF/root" install dflt
+	rm -f "$DF/root/etc/tatami/tatami.conf"; mkdir "$DF/root/etc/tatami/tatami.conf"
+	check "etc/tatami/tatami.conf is a directory: falls back to defaults" 0 "$TATAMI" -y -r "$DF/root" install dflt
 fi
 mkdir -p "$DF/root/etc/tatami/hooks.d"
 check "empty hooks.d directory" 0 "$TATAMI" -y -r "$DF/root" upgrade

@@ -24,6 +24,9 @@ using namespace std;
 // only if one of the paths the transaction added, changed or removed matches.
 // %ROOT% is replaced by the installation root; TATAMI_ROOT is set too.
 // A failing hook is reported but does not undo the transaction.
+// Splits a command line into words (quotes and backslashes work, no shell)
+vector<string> split_command(const string& line);
+
 class hook_runner {
 public:
 	// 'root' is the absolute installation root

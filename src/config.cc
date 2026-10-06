@@ -14,6 +14,7 @@ config_t default_config()
 {
 	config_t cfg;
 	cfg.pkg_ext = DEFAULT_PKG_EXT;
+	cfg.fetchcmd = DEFAULT_FETCHCMD;
 	// no repository listed: <root>/var/lib/tatami/packages (worked out per root)
 	return cfg;
 }
@@ -84,6 +85,10 @@ config_t read_config(const string& filename, bool required)
 						cfg.repo_dirs.insert(cfg.repo_dirs.end(), dirs.begin(), dirs.end());
 					}
 				}
+			} else if (key == "FETCHCMD") {
+				if (value.empty())
+					throw runtime_error(where + "FETCHCMD is empty");
+				cfg.fetchcmd = value;
 			} else if (key == "ARCH") {
 				cfg.arch = value;
 			} else if (key == "BULKHEAD") {

@@ -5,7 +5,7 @@
 # Install locations. Every one has a default and can be overridden on the
 # command line (make PREFIX=/opt/tatami SYSCONFDIR=/opt/etc install). They only
 # say where "make install" puts things; at run time tatami finds its files
-# relative to --root (default /): etc/tatami.conf, etc/tatami/hooks.d and
+# relative to --root (default /): etc/tatami/tatami.conf, etc/tatami/hooks.d and
 # var/lib/tatami.
 DESTDIR ?=
 PREFIX ?= /usr
@@ -24,7 +24,7 @@ NAME = tatami-$(VERSION)
 # them. A distribution can fix one extension for both tools instead:
 #   make PKG_EXT=myext
 # tatami gets it as -DDEFAULT_PKG_EXT, tatamk as the @DEFAULT_PKG_EXT@ substitution.
-# It can still be overridden when running: PKG_EXT in /etc/tatami.conf (both
+# It can still be overridden when running: PKG_EXT in /etc/tatami/tatami.conf (both
 # tools) and, for tatamk only, the PKG_EXT environment variable.
 PKG_EXT ?=
 ifneq ($(shell printf '%s' '$(PKG_EXT)' | tr -d 'A-Za-z0-9._-'),)
@@ -102,7 +102,7 @@ ifeq ($(STATIC),yes)
 LDFLAGS += -static
 endif
 
-SRCS = main.cc bulkhead.cc commands.cc engine.cc resolver.cc db.cc txn.cc rootfs.cc hooks.cc pack.cc pkgarchive.cc meta.cc config.cc util.cc
+SRCS = main.cc bulkhead.cc commands.cc engine.cc resolver.cc db.cc txn.cc rootfs.cc hooks.cc pack.cc pkgarchive.cc meta.cc config.cc repos.cc util.cc
 OBJECTS = $(SRCS:%.cc=src/%.o)
 
 all: tatami tatamk
@@ -253,10 +253,10 @@ install: all
 		$(DESTDIR)$(VARDIR)/packages $(DESTDIR)$(DB_DIR)
 	install -m0755 tatami $(DESTDIR)$(BINDIR)/tatami
 	install -m0755 tatamk $(DESTDIR)$(BINDIR)/tatamk
-	@if [ -e $(DESTDIR)$(ETCDIR)/tatami.conf ]; then \
-		echo "keeping existing $(DESTDIR)$(ETCDIR)/tatami.conf"; \
+	@if [ -e $(DESTDIR)$(ETCDIR)/tatami/tatami.conf ]; then \
+		echo "keeping existing $(DESTDIR)$(ETCDIR)/tatami/tatami.conf"; \
 	else \
-		install -m0644 tatami.conf $(DESTDIR)$(ETCDIR)/tatami.conf; \
+		install -m0644 tatami.conf $(DESTDIR)$(ETCDIR)/tatami/tatami.conf; \
 	fi
 	@for h in hooks/*.hook; do \
 		if [ -e $(DESTDIR)$(ETCDIR)/tatami/hooks.d/$$(basename $$h) ]; then \

@@ -4,6 +4,7 @@
 #include "meta.h"
 #include "paths.h"
 #include "pkgarchive.h"
+#include "repos.h"
 #include "resolver.h"
 #include "rootfs.h"
 #include "txn.h"
@@ -97,27 +98,24 @@ bool confirm(const context& ctx)
 // default is <root>/var/lib/tatami/packages.
 //
 
-// The directories to use, with file:// stripped. Network URLs are refused: no
-// HTTP client is built in.
-vector<string> repository_dirs(const context& ctx)
+// The repositories to use: repos.conf / repos.d of the root if they list any,
+// else REPO_DIRS of tatami.conf, else the local default directory. Only an
+// explicitly configured http(s)/ftp URL is ever fetched; everything else is read
+// straight from disk and never starts FETCHCMD.
+vector<repo_spec> repositories(const context& ctx)
 {
-	vector<string> specs = ctx.cfg.repo_dirs;
-	vector<string> dirs;
+	vector<repo_spec> repos = read_repo_config(ctx.opt.root);
+	if (!repos.empty())
+		return repos;
 
-	if (specs.empty())
-		specs.push_back(root_resolve(ctx.opt.root, DEFAULT_REPO_REL));
+	const vector<string>& specs = ctx.cfg.repo_dirs;
+	for (size_t i = 0; i < specs.size(); i++)
+		repos.push_back(make_repo_spec(ctx.opt.root, "repo" + itos(i + 1), specs[i]));
 
-	for (size_t i = 0; i < specs.size(); i++) {
-		string d = specs[i];
-		if (starts_with(d, "file://"))
-			d.erase(0, 7);
-		if (d.find("://") != string::npos)
-			throw runtime_error("repository " + specs[i] + ": network repositories are not supported "
-					    "(tatami has no HTTP client); use a directory or a file:// URL");
-		dirs.push_back(d);
-	}
+	if (repos.empty())
+		repos.push_back(make_repo_spec(ctx.opt.root, "local", root_resolve(ctx.opt.root, DEFAULT_REPO_REL)));
 
-	return dirs;
+	return repos;
 }
 
 // Reads the .META of every package in 'dir'. Packages that cannot be read are
@@ -199,27 +197,77 @@ size_t index_dir(const context& ctx, const string& dir)
 // Adds every configured repository to the solver
 void load_repositories(const context& ctx, resolver& res)
 {
-	const vector<string> dirs = repository_dirs(ctx);
+	const vector<repo_spec> repos = repositories(ctx);
 
-	for (size_t i = 0; i < dirs.size(); i++) {
-		struct stat dst;
-		if (stat(dirs[i].c_str(), &dst) == -1 || !S_ISDIR(dst.st_mode)) {
-			cerr << "tatami: warning: could not read repository " << dirs[i] << ": " << strerror(errno) << endl;
+	for (size_t i = 0; i < repos.size(); i++) {
+		const repo_spec& r = repos[i];
+
+		if (r.remote) {
+			// the index fetched by 'tatami update'
+			const string solv = r.dir + "/repo.solv";
+			if (!file_exists(solv)) {
+				cerr << "tatami: warning: repository " << r.name << " (" << r.url
+				     << ") has not been fetched yet, run 'tatami update'" << endl;
+				continue;
+			}
+			res.add_repo_solv(r.url, solv);
 			continue;
 		}
 
-		const string solv = dirs[i] + "/repo.solv";
+		const string& dir = r.dir;
+		struct stat dst;
+		if (stat(dir.c_str(), &dst) == -1 || !S_ISDIR(dst.st_mode)) {
+			cerr << "tatami: warning: could not read repository " << dir << ": " << strerror(errno) << endl;
+			continue;
+		}
+
+		const string solv = dir + "/repo.solv";
 		struct stat sst;
 		if (stat(solv.c_str(), &sst) == 0) {
 			if (!newer_than(dst, sst)) {
-				res.add_repo_solv(dirs[i], solv);
+				res.add_repo_solv(dir, solv);
 				continue;
 			}
-			cerr << "tatami: warning: " << solv << " is older than the packages in " << dirs[i]
-			     << ", scanning them instead (run 'tatami index " << dirs[i] << "')" << endl;
+			cerr << "tatami: warning: " << solv << " is older than the packages in " << dir
+			     << ", scanning them instead (run 'tatami index " << dir << "')" << endl;
 		}
-		res.add_repo(dirs[i], scan_dir(ctx, dirs[i]));
+		res.add_repo(dir, scan_dir(ctx, dir));
 	}
+}
+
+// Fetches the package of a plan step that lives in a remote repository into
+// <root>/var/cache/tatami/packages and returns the local file. A file already
+// in the cache that holds the right package is reused.
+string fetch_package(const context& ctx, const plan_step& st)
+{
+	const string url = st.filename;
+	const string file = url.substr(url.rfind('/') + 1);
+	if (file.empty() || file[0] == '.' || file.find_first_of("\n\r") != string::npos)
+		throw runtime_error("invalid package file name in " + url);
+
+	const string dir = root_resolve(ctx.opt.root, PKG_CACHE);
+	mkdir_p(dir);
+	const string cached = dir + "/" + file;
+
+	if (file_exists(cached)) {
+		try {
+			pkgmeta m = pkg_read_meta(cached);
+			if (m.name == st.name && m.version == st.version)
+				return cached;
+		} catch (runtime_error&) {
+		}
+		unlink(cached.c_str());
+	}
+
+	cout << "Downloading " << file << "..." << endl;
+	const string part = cached + ".part";
+	fetch_url(ctx.cfg.fetchcmd, url, part, true);
+	if (rename(part.c_str(), cached.c_str()) == -1) {
+		const int e = errno;
+		unlink(part.c_str());
+		throw runtime_error_with_errno("could not store " + cached, e);
+	}
+	return cached;
 }
 
 // Everything a command needs: database (locked), solver loaded with the
@@ -334,8 +382,8 @@ void run_transaction(const context& ctx, session& s, const char* verb,
 	// before touching the system (read-only, so also done when simulating).
 	for (size_t i = 0; i < plan.size(); i++) {
 		const plan_step& st = plan[i];
-		if (st.kind == plan_step::REMOVE)
-			continue;
+		if (st.kind == plan_step::REMOVE || is_remote_url(st.filename))
+			continue;       // remote ones are downloaded after the confirmation
 		if (st.filename.empty() || !file_exists(st.filename))
 			throw runtime_error("package file for " + st.name + " " + st.version +
 					    " not found: " + st.filename + " (try 'tatami update')");
@@ -350,6 +398,20 @@ void run_transaction(const context& ctx, session& s, const char* verb,
 
 	if (!confirm(ctx))
 		throw runtime_error("aborted");
+
+	// Remote packages are downloaded (and checked) before the system is touched
+	for (size_t i = 0; i < plan.size(); i++) {
+		plan_step& st = plan[i];
+		if (st.kind == plan_step::REMOVE || !is_remote_url(st.filename))
+			continue;
+		st.filename = fetch_package(ctx, st);
+		pkgmeta m = pkg_read_meta(st.filename);
+		if (m.name != st.name || m.version != st.version) {
+			unlink(st.filename.c_str());
+			throw runtime_error("the downloaded file does not contain " + st.name + " " +
+					    st.version + " (try 'tatami update')");
+		}
+	}
 
 	engine eng(ctx.cfg, s.db, ctx.opt.force);
 	eng.check_hooks();      // a malformed hook must stop us before the system is changed
@@ -441,26 +503,60 @@ void cmd_index(context& ctx)
 		string dir = ctx.args[i];
 		if (starts_with(dir, "file://"))
 			dir.erase(0, 7);
+		if (dir.find("://") != string::npos)
+			throw runtime_error("cannot index " + dir + ": only a local directory can be indexed");
 		const size_t n = index_dir(ctx, dir);
 		cout << "Indexed " << n << " package" << (n == 1 ? "" : "s") << " in " << dir << "/repo.solv" << endl;
 	}
 }
 
+// Downloads the repo.solv of a remote repository into the cache
+void update_remote(const context& ctx, const repo_spec& r)
+{
+	const string solv = r.dir + "/repo.solv";
+	const string part = solv + ".part";
+
+	mkdir_p(r.dir);
+	fetch_url(ctx.cfg.fetchcmd, r.url + "/repo.solv", part, true);
+
+	// whatever came back must be a real index (without -f curl saves error pages too)
+	try {
+		resolver check("noarch");
+		check.add_repo_solv(r.url, part);
+	} catch (runtime_error& e) {
+		unlink(part.c_str());
+		throw runtime_error(r.url + "/repo.solv is not a valid index: " + e.what());
+	}
+	if (rename(part.c_str(), solv.c_str()) == -1) {
+		const int e = errno;
+		unlink(part.c_str());
+		throw runtime_error_with_errno("could not write " + solv, e);
+	}
+}
+
 void cmd_update(context& ctx)
 {
-	const vector<string> dirs = repository_dirs(ctx);
+	const vector<repo_spec> repos = repositories(ctx);
 
-	for (size_t i = 0; i < dirs.size(); i++) {
+	for (size_t i = 0; i < repos.size(); i++) {
+		const repo_spec& r = repos[i];
 		try {
-			if (ctx.opt.simulate) {
-				const size_t n = scan_dir(ctx, dirs[i]).size();
-				cout << "Would index " << n << " package" << (n == 1 ? "" : "s") << " in " << dirs[i] << endl;
+			if (r.remote) {
+				if (ctx.opt.simulate) {
+					cout << "Would fetch " << r.url << "/repo.solv" << endl;
+				} else {
+					cout << "Fetching " << r.name << " (" << r.url << ")..." << endl;
+					update_remote(ctx, r);
+				}
+			} else if (ctx.opt.simulate) {
+				const size_t n = scan_dir(ctx, r.dir).size();
+				cout << "Would index " << n << " package" << (n == 1 ? "" : "s") << " in " << r.dir << endl;
 			} else {
-				const size_t n = index_dir(ctx, dirs[i]);
-				cout << "Indexed " << n << " package" << (n == 1 ? "" : "s") << " in " << dirs[i] << "/repo.solv" << endl;
+				const size_t n = index_dir(ctx, r.dir);
+				cout << "Indexed " << n << " package" << (n == 1 ? "" : "s") << " in " << r.dir << "/repo.solv" << endl;
 			}
 		} catch (runtime_error& e) {
-			cerr << "tatami: warning: " << dirs[i] << ": " << e.what() << endl;
+			cerr << "tatami: warning: " << r.name << ": " << e.what() << endl;
 		}
 	}
 }
@@ -698,7 +794,7 @@ void cmd_owns(context& ctx)
 }
 
 const command_t commands[] = {
-	{ "update",  0,      "update",                   "(re)build the index of every configured repository",       false, cmd_update },
+	{ "update",  0,      "update",                   "index local repositories, fetch remote ones (FETCHCMD)",       false, cmd_update },
 	{ "index",   0,      "index <dir>...",           "write the repo.solv index of repository directories",      false, cmd_index },
 	{ "install", "add",  "install <pkg|file>...",    "install packages (and their dependencies) or upgrade them", true,  cmd_install },
 	{ "remove",  "rm",   "remove <package>...",      "remove packages, their dependents and unused dependencies", true,  cmd_remove },

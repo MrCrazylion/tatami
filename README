@@ -184,7 +184,7 @@ letters, digits, '.', '_' and '-' and no leading dot.
 
 The built-in value can be overridden when running, in this order of precedence:
   1. PKG_EXT in the environment (tatamk only)
-  2. PKG_EXT in /etc/tatami.conf (tatami and tatamk)
+  2. PKG_EXT in /etc/tatami/tatami.conf (tatami and tatamk)
   3. the build-time default
 Keep tatami and tatamk on the same extension: if you override it only for
 tatamk through the environment, set the same PKG_EXT in tatami.conf or tatami
@@ -240,21 +240,42 @@ forces the sandbox over the config setting.
 
 Repositories and the repo.solv index
 ------------------------------------
-A repository is a directory of package files. REPO_DIRS in tatami.conf lists them
-(paths or file:// URLs; the first one listed wins when a version is in several;
-without REPO_DIRS it is <root>/var/lib/tatami/packages). Dependencies are
-resolved across all of them together, not just local files.
+A repository is a directory of package files, local or remote. They are listed
+as name=url lines in <root>/etc/tatami/repos.conf and <root>/etc/tatami/repos.d/*.conf:
 
-$ tatami index /srv/packages          writes /srv/packages/repo.solv
-$ tatami update                       does that for every configured repository
+  local=/mnt/repo
+  usb=file:///media/usb/packages
+  core=https://my-os.example/core
+
+(REPO_DIRS in tatami.conf still works when there is no repos.conf; the first
+repository listed wins when a version is in several.) If nothing is configured the
+repository is the local directory <root>/var/lib/tatami/packages, so tatami is
+offline unless you explicitly add an http://, https:// or ftp:// repository.
+Dependencies are resolved across all repositories together.
+
+$ tatami index /srv/packages          writes /srv/packages/repo.solv (the server side)
+$ tatami update                       indexes local repositories, fetches remote ones
 
 repo.solv is libsolv's own binary repository format: it holds each package's
 name, version, architecture, dependencies, conflicts, provides, replaces, size and
-file name. A directory that has one is read through it. If packages were added
-after it was written, tatami says so and scans the directory instead (so the
-result is never wrong, just slower) until you index again. A directory without a
-repo.solv is simply scanned. Network repositories (http://, https://) are not
-supported: tatami has no HTTP client built in and says so.
+file name. A local directory that has one is read through it. If packages were
+added after it was written, tatami says so and scans the directory instead (so the
+result is never wrong, just slower) until you index again.
+
+Remote repositories: tatami has no network code. 'tatami update' runs FETCHCMD
+(tatami.conf; default: curl -f -L -# "%URL%" -o "%DEST%") to download <url>/repo.solv
+to <root>/var/lib/tatami/repos/<name>/repo.solv; a download that is not a valid
+index is discarded and the previous one kept. 'tatami install' loads those cached
+indexes and, for a package from a remote repository, runs FETCHCMD for
+<url>/<file> into <root>/var/cache/tatami/packages/, checks that it holds the
+package the index promised, and installs it from there (a cached file is reused).
+FETCHCMD is run directly, not through a shell, so nothing in a URL is interpreted.
+Its stderr is read through a pipe: when stdout is a terminal tatami draws its own
+progress bar from the percentages that curl -# prints and hides the raw output
+(without a terminal, or for a command that prints no percentages, nothing is drawn).
+If the command fails, its last message is shown in the error. A local path or
+file:// repository never starts FETCHCMD. Publish a remote repository by putting
+the packages and the repo.solv of 'tatami index' on a web server.
 
 
 Target root (--root)
@@ -264,7 +285,7 @@ belongs to that root and nothing outside it is touched:
 
   <root>/var/lib/tatami/db                  the package database
   <root>/var/lib/tatami/                   journal, install reasons, rejected files
-  <root>/etc/tatami.conf                   configuration
+  <root>/etc/tatami/tatami.conf                   configuration
   <root>/etc/tatami/hooks.d/               hooks
   the files of the packages
 
@@ -280,7 +301,7 @@ are inputs, not part of the root.)
 
 Target architecture
 -------------------
-libsolv's pool is set to the target's architecture, ARCH in <root>/etc/tatami.conf
+libsolv's pool is set to the target's architecture, ARCH in <root>/etc/tatami/tatami.conf
 (default: the machine's). Only that architecture and noarch packages can be
 installed or serve as dependencies; others are refused with "built for
 architecture X, which is incompatible with this system (Y)". ARCH=x86_64:i686
@@ -309,12 +330,15 @@ are checked before the transaction starts, so a malformed one changes nothing.
 
 Files
 -----
-/etc/tatami.conf               settings and UPGRADE/INSTALL rules
+/etc/tatami/tatami.conf               settings and UPGRADE/INSTALL rules
 /var/lib/tatami/db              installed packages and their files
 /var/lib/tatami/meta/<name>    metadata of installed packages, install reason
 /var/lib/tatami/rejected/      new versions of files that were kept (UPGRADE ... NO)
 /var/lib/tatami/transaction.journal   undo log of an installation in progress
 <repository>/repo.solv         binary index of a repository
+/etc/tatami/repos.conf, repos.d/*.conf   repositories (name=url)
+/var/lib/tatami/repos/<name>/  fetched indexes of remote repositories
+/var/cache/tatami/packages/    downloaded packages
 /etc/tatami/hooks.d/*.hook     post-transaction hooks
 
 
