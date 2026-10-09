@@ -469,11 +469,13 @@ void run_transaction(const context& ctx, session& s, const char* verb,
 		throw runtime_error("aborted");
 
 	// Remote packages are downloaded (and checked) before the system is touched
+	vector<string> downloaded;      // cache files of this run, deleted once it is committed
 	for (size_t i = 0; i < plan.size(); i++) {
 		plan_step& st = plan[i];
 		if (st.kind == plan_step::REMOVE || !is_remote_url(st.filename))
 			continue;
 		st.filename = fetch_package(ctx, st);
+		downloaded.push_back(st.filename);
 		pkgmeta m = pkg_read_meta(st.filename);
 		if (m.name != st.name || m.version != st.version) {
 			unlink(st.filename.c_str());
@@ -484,6 +486,15 @@ void run_transaction(const context& ctx, session& s, const char* verb,
 
 	engine eng(ctx.cfg, s.db, ctx.opt.force);
 	eng.check_hooks();      // a malformed hook must stop us before the system is changed
+
+	// enough room for everything that will be extracted? (refused before anything is touched)
+	vector<string> incoming;
+	for (size_t i = 0; i < plan.size(); i++)
+		if (plan[i].kind != plan_step::REMOVE)
+			incoming.push_back(plan[i].filename);
+	eng.check_disk_space(incoming);
+	for (size_t i = 0; i < downloaded.size(); i++)
+		eng.discard_when_committed(downloaded[i]);
 
 	// All or nothing: a failure anywhere undoes every package of this run
 	eng.begin();

@@ -99,6 +99,8 @@ string read_entry_data(struct archive* a, const string& filename)
 package_t pkg_open(const string& filename)
 {
 	package_t result;
+	result.bytes = 0;
+	result.entries = 0;
 	archive_ptr ar = open_archive(filename);
 	struct archive* a = ar.get();
 	struct archive_entry* entry;
@@ -117,6 +119,10 @@ package_t pkg_open(const string& filename)
 
 		if (!name.empty())
 			result.files.insert(result.files.end(), name);
+
+		result.entries++;
+		if (S_ISREG(mode) && archive_entry_size_is_set(entry) && archive_entry_size(entry) > 0)
+			result.bytes += (unsigned long long)archive_entry_size(entry);
 
 		if (S_ISREG(mode) && archive_read_data_skip(a) != ARCHIVE_OK)
 			throw runtime_error("could not read " + filename + ": " + archive_error_string(a));

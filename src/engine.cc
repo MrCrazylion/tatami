@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <sys/wait.h>
 #include <csignal>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 static const char* UTILNAME = "tatami";
@@ -93,6 +94,39 @@ void engine::begin()
 	tx_->begin();
 	doomed_.clear();
 	hook_log_.clear();
+}
+
+static string mib(unsigned long long bytes)
+{
+	return itos((bytes + (1 << 20) - 1) >> 20) + " MiB";
+}
+
+void engine::check_disk_space(const vector<string>& package_files)
+{
+	struct statvfs vfs;
+	if (statvfs(db_.root().c_str(), &vfs) == -1 || vfs.f_frsize == 0)
+		return;
+
+	// Upgrades free their old files only at the commit, so every package counts in full.
+	// Each file wastes about half a block on top of its size.
+	unsigned long long need = 0;
+	for (size_t i = 0; i < package_files.size(); i++) {
+		const package_t p = pkg_open(package_files[i]);
+		need += p.bytes + p.entries * (vfs.f_frsize / 2);
+	}
+	// small safety margin: 5% and 8 MiB (journal, database, backups' metadata)
+	need += need / 20 + (8ULL << 20);
+
+	const unsigned long long have = (unsigned long long)vfs.f_bavail * vfs.f_frsize;
+	if (need > have)
+		throw runtime_error("not enough disk space on " + db_.root() + ": " + mib(need) +
+				    " needed (including a safety margin), " + mib(have) + " available. "
+				    "Nothing has been changed.");
+}
+
+void engine::discard_when_committed(const string& cached_file)
+{
+	cache_files_.push_back(cached_file);
 }
 
 void engine::install(const string& filename, bool requested)
@@ -209,6 +243,17 @@ void engine::commit()
 		hooks_.record(hook_log_[i].first, hook_log_[i].second);
 	hook_log_.clear();
 	doomed_.clear();
+
+	// The transaction is done: the packages it downloaded are no longer needed
+	const string cache = db_.path(PKG_CACHE) + "/";
+	for (size_t i = 0; i < cache_files_.size(); i++) {
+		const string& f = cache_files_[i];
+		if (f.compare(0, cache.size(), cache) != 0 || f.find("/", cache.size()) != string::npos)
+			continue;       // never anything outside the cache directory
+		unlink(f.c_str());
+		unlink((f + ".sig").c_str());
+	}
+	cache_files_.clear();
 }
 
 void engine::rollback()
@@ -220,6 +265,7 @@ void engine::rollback()
 	db_.open(true);         // forget the changes made in memory
 	hook_log_.clear();
 	doomed_.clear();
+	cache_files_.clear();   // the cache is left as it is: a retry does not download again
 }
 
 void engine::check_hooks()

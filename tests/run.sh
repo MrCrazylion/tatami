@@ -781,6 +781,59 @@ mkp() {
 	"$TATAMK" -c "$TCONF" -f "$dir/Tatamifile" -o "$repo" > "$dir/log" 2>&1 || bad "tatamk $name $version" "$(cat "$dir/log")"
 }
 
+echo "# disk space: checked before anything is extracted"
+ROOT="$T/root-space"; rm -rf "$ROOT"; mkdir -p "$ROOT/etc"
+python3 - "$T" "$EXT" <<'PY'
+import tarfile, io, sys
+t, ext = sys.argv[1], sys.argv[2]
+for name in ("big1", "big2"):
+    with tarfile.open("%s/%s_1.%s" % (t, name, ext), "w:gz") as tf:
+        def add(n, data):
+            i = tarfile.TarInfo(n); i.size = len(data); i.mode = 0o644; tf.addfile(i, io.BytesIO(data))
+        add(".META", ("name: %s\nversion: 1\n" % name).encode())
+        add("usr/share/%s/blob" % name, b"\0" * (5 << 20))      # 5 MiB once extracted, tiny compressed
+PY
+cat > "$T/fakefree.c" <<'C'
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <stdlib.h>
+#include <sys/statvfs.h>
+/* reports FAKE_FREE_BYTES as the free space of every filesystem */
+static void fake(struct statvfs *b) {
+	const char *e = getenv("FAKE_FREE_BYTES");
+	if (e && b->f_frsize) { b->f_bavail = strtoull(e, 0, 10) / b->f_frsize; b->f_bfree = b->f_bavail; }
+}
+int statvfs(const char *p, struct statvfs *b) {
+	int (*real)(const char *, struct statvfs *) = dlsym(RTLD_NEXT, "statvfs");
+	int r = real(p, b); if (r == 0) fake(b); return r;
+}
+int statvfs64(const char *p, struct statvfs64 *b) {
+	int (*real)(const char *, struct statvfs64 *) = dlsym(RTLD_NEXT, "statvfs64");
+	int r = real(p, b);
+	const char *e = getenv("FAKE_FREE_BYTES");
+	if (r == 0 && e && b->f_frsize) { b->f_bavail = strtoull(e, 0, 10) / b->f_frsize; b->f_bfree = b->f_bavail; }
+	return r;
+}
+C
+if cc -shared -fPIC -o "$T/fakefree.so" "$T/fakefree.c" -ldl 2>/dev/null && ldd "$TATAMI" >/dev/null 2>&1; then
+	FF() { env LD_PRELOAD="$T/fakefree.so" FAKE_FREE_BYTES="$1" "$TATAMI" -r "$ROOT" -c "$CONF" -y install "${@:2}"; }
+	check "set up the root" 0 ty install "$T/gg1_1.$EXT"
+	before=$(snap)
+	check "one 5 MiB package with 10 MiB free is refused" 1 FF $((10<<20)) "$T/big1_1.$EXT"
+	has "with the numbers" "not enough disk space on .*: [0-9]+ MiB needed .* 10 MiB available"
+	has "and a promise" "Nothing has been changed"
+	[ "$before" = "$(snap)" ] && ok "the filesystem is untouched, no journal, no half-extracted files" || bad "the refused install changed something"
+	check "the same package with 16 MiB free fits (5 MiB + margin)" 0 FF $((16<<20)) "$T/big1_1.$EXT"
+	check "remove it" 0 ty remove big1
+	check "two such packages need the sum: 16 MiB are not enough" 1 FF $((16<<20)) "$T/big1_1.$EXT" "$T/big2_1.$EXT"
+	[ ! -e "$ROOT/usr/share/big1/blob" ] && ok "so not even the first one was extracted" || bad "first package extracted"
+	check "with 32 MiB both are installed" 0 FF $((32<<20)) "$T/big1_1.$EXT" "$T/big2_1.$EXT"
+	check "without the shim the real free space is used and is enough" 0 ty remove big1 big2
+else
+	echo "skip - no C compiler or a static tatami: the disk space tests need an LD_PRELOAD shim"
+fi
+ROOT="$ROOT_MAIN"
+
 echo "# repositories: the binary repo.solv index"
 RP="$T/repos"; rm -rf "$RP"; mkdir -p "$RP/a" "$RP/b" "$RP/root/etc"
 mkp "$RP/a" rp-one 1.0 - '"rp-two >= 1.0"' usr/share/rp-one/f:one
@@ -1093,13 +1146,14 @@ check "update fetches the remote index" 0 rr update
 [ "$(cat "$FLOG")" = "https://mirror.test/core/repo.solv" ] && ok "FETCHCMD got the repo.solv URL" || bad "unexpected fetches" "$(cat "$FLOG")"
 [ "$(head -c 4 "$RR/var/lib/tatami/repos/core/repo.solv")" = SOLV ] && ok "index cached in <root>/var/lib/tatami/repos/core/" || bad "no cached index"
 check "install from the cached index" 0 rr -y install rm-app
-FILE="rm-app_1.0_${HARCH}"; ls "$RR/var/cache/tatami/packages/" | grep -q "^$FILE\." && ok "package downloaded to <root>/var/cache/tatami/packages" || bad "no cached package" "$(ls "$RR/var/cache/tatami/packages" 2>&1)"
+FILE="rm-app_1.0_${HARCH}"; grep -q "^https://mirror.test/core/$FILE\." "$FLOG" && ok "the package was downloaded" || bad "no download" "$(cat "$FLOG")"
+[ -z "$(ls "$RR/var/cache/tatami/packages/" 2>/dev/null)" ] && ok "after the commit the downloaded packages are deleted from <root>/var/cache/tatami/packages" || bad "cache not cleaned" "$(ls "$RR/var/cache/tatami/packages")"
 [ -f "$RR/usr/share/rm-app/f" ] && [ -f "$RR/usr/share/rm-lib/f" ] && ok "package and dependency installed" || bad "not installed"
 [ "$(grep -c '^https://mirror.test/core/rm-' "$FLOG")" = 2 ] && ok "both package URLs were built from the repository URL" || bad "package fetches" "$(cat "$FLOG")"
 rr -y remove rm-app rm-lib >/dev/null 2>&1
 : > "$FLOG"
 check "reinstall" 0 rr -y install rm-app
-[ ! -s "$FLOG" ] && ok "cached packages are reused, nothing downloaded again" || bad "downloaded again" "$(cat "$FLOG")"
+[ "$(grep -c '^https://mirror.test/core/rm-' "$FLOG")" = 2 ] && ok "the cache was cleaned, so both packages are downloaded again" || bad "unexpected fetches" "$(cat "$FLOG")"
 rr -y remove rm-app rm-lib >/dev/null 2>&1
 rm -rf "$RR/var/cache"; : > "$FLOG"
 check "simulate does not download" 0 rr -s install rm-app
@@ -1235,12 +1289,19 @@ check "update of a signed remote repository" 0 sr update
 grep -qx "https://mirror.test/core/repo.solv.sig" "$FLOG" && ok "the .sig of the index was fetched" || bad "no .sig fetched" "$(cat "$FLOG")"
 [ -f "$SG/root/var/lib/tatami/repos/core/repo.solv.sig" ] && ok "index and signature are cached together" || bad "no cached signature"
 check "install from the signed repository" 0 sr -y install sg-app
-grep -qx "https://mirror.test/core/$P.sig" "$FLOG" && [ -f "$SG/root/var/cache/tatami/packages/$P.sig" ] && ok "the package signature was fetched and cached" || bad "package .sig" "$(cat "$FLOG")"
+grep -qx "https://mirror.test/core/$P.sig" "$FLOG" && ok "the package signature was fetched" || bad "package .sig" "$(cat "$FLOG")"
+[ -z "$(ls "$SG/root/var/cache/tatami/packages/" 2>/dev/null)" ] && ok "package and .sig are deleted from the cache after the commit" || bad "cache not cleaned" "$(ls "$SG/root/var/cache/tatami/packages")"
 [ -f "$SG/root/usr/share/sg-app/f" ] && ok "installed" || bad "not installed"
 sr -y remove sg-app >/dev/null 2>&1
 : > "$FLOG"
-check "reinstall from the cache" 0 sr -y install sg-app
-[ ! -s "$FLOG" ] && ok "a cached package with a valid signature is reused" || bad "re-downloaded" "$(cat "$FLOG")"
+# a transaction that fails keeps the cache; the retry reuses the verified download
+mkdir -p "$SG/root/usr/share/sg-app"; echo mine > "$SG/root/usr/share/sg-app/f"
+check "an install that fails on a conflicting file" 1 sr -y install sg-app
+ls "$SG/root/var/cache/tatami/packages/" | grep -q "^$P$" && ls "$SG/root/var/cache/tatami/packages/" | grep -q "^$P.sig$" && ok "after the rollback the downloaded package and its .sig are still cached" || bad "cache lost on rollback" "$(ls "$SG/root/var/cache/tatami/packages")"
+rm -rf "$SG/root/usr/share/sg-app"; : > "$FLOG"
+check "the retry" 0 sr -y install sg-app
+[ ! -s "$FLOG" ] && ok "a cached package with a valid signature is reused, nothing downloaded again" || bad "re-downloaded" "$(cat "$FLOG")"
+[ -z "$(ls "$SG/root/var/cache/tatami/packages/" 2>/dev/null)" ] && ok "and it is deleted once the retry committed" || bad "cache not cleaned after retry"
 sr -y remove sg-app >/dev/null 2>&1
 
 # a different key, a tampered package, a missing signature: all refused

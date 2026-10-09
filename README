@@ -135,6 +135,14 @@ database decides: if it shows the result of every operation the run is finished
 For testing, TATAMI_CRASH_AT=extracted|committed makes tatami kill itself at
 those two points.
 
+Two things happen without any option. Before anything is extracted tatami adds up the
+unpacked size of all incoming packages (plus about half a block per file and a margin
+of 5% and 8 MiB) and compares it with the free space of the root's filesystem
+(statvfs); if it does not fit the run is refused with the numbers and nothing is
+touched. And once a transaction has committed, the packages it downloaded are deleted
+from var/cache/tatami/packages together with their .sig files; after a rollback they
+stay, so that a retry does not download them again.
+
 
 Package format and names
 ------------------------

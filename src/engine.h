@@ -33,6 +33,16 @@ public:
 	// middle is undone by txn::recover() the next time tatami starts.
 	void begin();
 
+	// Throws if the filesystem of the root has not enough free space to extract
+	// these package files (plus a safety margin). Call it before begin(): then
+	// nothing has been touched yet. Does nothing if the space cannot be determined.
+	void check_disk_space(const vector<string>& package_files);
+
+	// Files of the download cache that were used by this transaction: they are
+	// deleted (with their .sig) when the transaction commits, and left alone if it
+	// is rolled back. Only files inside the cache directory are ever deleted.
+	void discard_when_committed(const string& cached_file);
+
 	// Installs or upgrades (if the package is already installed) a package file.
 	// 'requested' is true if the user asked for this package, false if it is
 	// only installed to satisfy a dependency.
@@ -72,6 +82,7 @@ private:
 	database& db_;
 	bool force_;
 	unique_ptr<txn> tx_;                    // the open transaction
+	vector<string> cache_files_;            // downloaded packages to delete after the commit
 	set<string> doomed_;                    // files to delete at commit unless a package still owns them
 	vector<pair<string, set<string> > > hook_log_;  // (operation, files), given to the hooks at commit
 	hook_runner hooks_;

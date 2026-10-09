@@ -11,6 +11,8 @@ using namespace std;
 struct package_t {
 	pkgmeta meta;
 	set<string> files;      // normalised member paths, directories end in '/'
+	unsigned long long bytes;       // total size of the regular files once extracted
+	unsigned long long entries;     // number of members (each takes at least a block or an inode)
 };
 
 // Scans the whole archive. Throws if the package has no .META member.
