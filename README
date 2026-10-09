@@ -106,26 +106,34 @@ because it is no longer needed. There is deliberately no separate autoremove
 command. 'tatami -s remove X' shows the result without changing anything.
 
 
-Atomic installation and rollback
+Atomic transactions and rollback
 --------------------------------
-A package is installed all or nothing. Every change the extraction makes is
-recorded first: files and directories it creates (including the parent
-directories libarchive makes on the way), files it overwrites (moved aside in
-their own directory, so on the same filesystem), and the mode and owner of
-existing directories it touches. The first error of any kind (a file that
-cannot be written, a full disk, a corrupt or truncated archive, ...) stops the
-extraction, deletes what was created (bottom-up), restores what was
-overwritten, and leaves the package database untouched. The database is
-committed only after the whole package is on disk, and files of an older
-version that the new one no longer contains are deleted only after that, so a
-failed upgrade leaves the old version exactly as it was.
+Everything one command does (all the installs, upgrades and removals of its plan)
+is one transaction: all or nothing. Every change the extractions make is recorded
+first: files and directories they create (including the parent directories
+libarchive makes on the way), files they overwrite (moved aside in their own
+directory, so on the same filesystem), and the mode and owner of existing
+directories they touch. Removals and the files an upgrade drops are not deleted
+yet, and the package database is only changed in memory.
 
-The record is also kept in var/lib/tatami/transaction.journal. If tatami is
-killed or the machine loses power in the middle of an installation, the next
-command that modifies the system undoes it first (or, if the database commit
-had already happened, finishes it) and says so. Rollback is per package: in an
-installation of several packages, those that were completed before the failure
-stay installed.
+Only when every package is on disk is the transaction committed: the deletions are
+journalled, the database is written (one atomic rename, the commit point), and
+then the old files and backups go. The first error of any kind in any package (a
+file that cannot be written, a full disk, a corrupt or truncated archive, a
+conflict, ...) stops the run, deletes what was created (bottom-up), restores what
+was overwritten, and leaves the database untouched: the packages that had already
+been extracted are undone too. A file that a new package takes over from a package
+being removed in the same run is kept, with the new content.
+
+The record is also kept in var/lib/tatami/transaction.journal ("T" starts a run,
+"I"/"R" note the packages, "K" is written right before the database commit). If
+tatami is killed (SIGKILL) or the machine loses power in the middle of a run, the
+next command that modifies the system reads the journal first: without a "K" the
+database cannot have been written and the whole run is rolled back; with one, the
+database decides: if it shows the result of every operation the run is finished
+(deferred deletions, backups), otherwise it is rolled back. It says which.
+For testing, TATAMI_CRASH_AT=extracted|committed makes tatami kill itself at
+those two points.
 
 
 Package format and names

@@ -9,8 +9,8 @@
 
 using namespace std;
 
-// Undo log of one package installation. Everything the extraction changes on
-// disk is recorded first:
+// Undo log of one whole run (all the installations, upgrades and removals of a
+// plan). Everything the run changes on disk is recorded first:
 //   - a path that did not exist (file, symlink, directory, and the parent
 //     directories libarchive creates on the way) is removed again on rollback,
 //     bottom-up;
@@ -19,20 +19,39 @@ using namespace std;
 //     rollback;
 //   - an existing directory whose mode/owner the extraction changes gets them
 //     restored.
-// Files of the previous version that are no longer part of the package are
-// not deleted up front but deferred until the database was committed.
+// Files that are no longer wanted (removed packages, files an upgrade dropped)
+// are not deleted up front but deferred until the database was committed.
+// The database itself is only changed in memory until then; one commit makes
+// the whole run visible, one rollback undoes all of it.
 //
-// The log is also written to a journal file below var/lib/tatami, so an
-// installation interrupted by a crash or power loss is undone (or, if the
-// database was already committed, finished) the next time tatami runs.
+// The log is also written to a journal file below var/lib/tatami, so a run
+// interrupted by a crash, SIGKILL or power loss is undone (or, if it got as far
+// as the database commit, finished) the next time tatami runs:
+//   T                    start of a run
+//   I name version       a package is installed or upgraded
+//   R name               a package is removed
+//   C/B/M/D ...          the file actions described above
+//   K                    all work is done, the database commit follows
+// Without a K the database cannot have been committed: the run is rolled back.
+// With a K the database decides: if it lists the result of every I and R the
+// run is finished, otherwise it is rolled back.
 class txn {
 public:
 	// 'journal' is the absolute host path of the journal file
 	explicit txn(const string& journal);
 	~txn();
 
-	// Starts the journal for installing 'name' 'version'
-	void begin(const string& name, const string& version);
+	// Starts the journal of a run
+	void begin();
+
+	// What the run does to the package database (journalled so that a crash can
+	// tell afterwards whether the commit happened)
+	void note_install(const string& name, const string& version);
+	void note_remove(const string& name);
+
+	// Call after everything was extracted and the deferred deletions were
+	// recorded, right before the database is committed
+	void commit_point();
 
 	void created(const string& path);
 	// Moves an existing file out of the way and returns where it went
@@ -44,7 +63,8 @@ public:
 	// Undoes everything, restoring the filesystem to its state at begin()
 	void rollback();
 	// Called after the database was committed: performs the deferred deletions,
-	// drops the backups and the journal
+	// drops the backups and the journal. (Also what recover() does when it finds
+	// that the database was committed.)
 	void commit();
 
 	// Handles a journal left behind by an interrupted run in the installation

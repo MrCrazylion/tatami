@@ -266,66 +266,22 @@ void database::unreference(const set<string>& files)
 			i->second.files.erase(*j);
 }
 
-void database::remove_files(const set<string>& files) const
+void database::drop_pkg(const string& name)
 {
-	// Reverse order: directory contents are removed before the directory
-	for (set<string>::const_reverse_iterator i = files.rbegin(); i != files.rend(); ++i) {
-		const string filename = root_resolve(root_, *i);
-
-		// A package lists the directories it uses (lib/). If that is a symbolic
-		// link in this root (a usr-merged /lib -> usr/lib) it is part of the base
-		// system, not of the package: leave it, and what it points to, alone.
-		if ((*i)[i->length() - 1] == '/') {
-			struct stat st;
-			if (lstat(filename.c_str(), &st) == 0 && S_ISLNK(st.st_mode))
-				continue;
-		}
-
-		if (file_exists(filename) && remove(filename.c_str()) == -1) {
-			if (errno == ENOTEMPTY)
-				continue;
-			cerr << "tatami: could not remove " << filename << ": " << strerror(errno) << endl;
-		}
-	}
-}
-
-void database::rm_pkg(const string& name, const set<string>& keep_list)
-{
-	packages_t::iterator pkg = packages_.find(name);
-	if (pkg == packages_.end())
-		return;
-
-	set<string> files = pkg->second.files;
-	packages_.erase(pkg);
+	packages_.erase(name);
 	metas_.erase(name);
-
-	// Don't delete files found in the keep list
-	for (set<string>::const_iterator i = keep_list.begin(); i != keep_list.end(); ++i)
-		files.erase(*i);
-
-	// Don't delete files that still have references
-	for (packages_t::const_iterator i = packages_.begin(); i != packages_.end(); ++i)
-		for (set<string>::const_iterator j = i->second.files.begin(); j != i->second.files.end(); ++j)
-			files.erase(*j);
-
-	remove_files(files);
 }
 
-void database::rm_files(set<string> files, const set<string>& keep_list)
+set<string> database::owned_files() const
 {
-	// Remove all references
-	for (packages_t::iterator i = packages_.begin(); i != packages_.end(); ++i)
-		for (set<string>::const_iterator j = files.begin(); j != files.end(); ++j)
-			i->second.files.erase(*j);
-
-	// Don't delete files found in the keep list
-	for (set<string>::const_iterator i = keep_list.begin(); i != keep_list.end(); ++i)
-		files.erase(*i);
-
-	remove_files(files);
+	set<string> owned;
+	for (packages_t::const_iterator i = packages_.begin(); i != packages_.end(); ++i)
+		owned.insert(i->second.files.begin(), i->second.files.end());
+	return owned;
 }
 
-set<string> database::find_conflicts(const string& name, const set<string>& pkgfiles) const
+set<string> database::find_conflicts(const string& name, const set<string>& pkgfiles,
+				     const set<string>& doomed) const
 {
 	set<string> files;
 
@@ -340,7 +296,7 @@ set<string> database::find_conflicts(const string& name, const set<string>& pkgf
 
 	// Find conflicting files in filesystem
 	for (set<string>::const_iterator i = pkgfiles.begin(); i != pkgfiles.end(); ++i) {
-		if (file_exists(root_resolve(root_, *i)))
+		if (doomed.find(*i) == doomed.end() && file_exists(root_resolve(root_, *i)))
 			files.insert(*i);
 	}
 

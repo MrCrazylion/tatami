@@ -484,22 +484,36 @@ void run_transaction(const context& ctx, session& s, const char* verb,
 
 	engine eng(ctx.cfg, s.db, ctx.opt.force);
 	eng.check_hooks();      // a malformed hook must stop us before the system is changed
-	for (size_t i = 0; i < plan.size(); i++) {
-		const plan_step& st = plan[i];
-		switch (st.kind) {
-		case plan_step::INSTALL:
-			cout << "Installing " << st.name << " (" << st.version << ")..." << endl;
-			eng.install(st.filename, s.res->requested_names().count(st.name) > 0);
-			break;
-		case plan_step::UPGRADE:
-			cout << "Upgrading " << st.name << " (" << st.old_version << " -> " << st.version << ")..." << endl;
-			eng.install(st.filename, s.res->requested_names().count(st.name) > 0);
-			break;
-		case plan_step::REMOVE:
-			cout << "Removing " << st.name << " (" << st.version << ")..." << endl;
-			eng.remove(st.name);
-			break;
+
+	// All or nothing: a failure anywhere undoes every package of this run
+	eng.begin();
+	size_t done = 0;
+	try {
+		for (size_t i = 0; i < plan.size(); i++) {
+			const plan_step& st = plan[i];
+			switch (st.kind) {
+			case plan_step::INSTALL:
+				cout << "Installing " << st.name << " (" << st.version << ")..." << endl;
+				eng.install(st.filename, s.res->requested_names().count(st.name) > 0);
+				break;
+			case plan_step::UPGRADE:
+				cout << "Upgrading " << st.name << " (" << st.old_version << " -> " << st.version << ")..." << endl;
+				eng.install(st.filename, s.res->requested_names().count(st.name) > 0);
+				break;
+			case plan_step::REMOVE:
+				cout << "Removing " << st.name << " (" << st.version << ")..." << endl;
+				eng.remove(st.name);
+				break;
+			}
+			done++;
 		}
+		eng.commit();
+	} catch (runtime_error& e) {
+		cerr << "tatami: " << e.what() << endl;
+		cerr << "tatami: rolling back the whole transaction (" << done << " of " << plan.size()
+		     << " steps had been done)..." << endl;
+		eng.rollback();
+		throw runtime_error("the transaction failed, nothing was changed");
 	}
 
 	eng.run_hooks();

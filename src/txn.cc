@@ -40,7 +40,7 @@ void txn::append(const string& line)
 	}
 }
 
-void txn::begin(const string& name, const string& version)
+void txn::begin()
 {
 	mkdir_p(journal_.substr(0, journal_.rfind('/')));
 	fd_ = open(journal_.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
@@ -49,7 +49,25 @@ void txn::begin(const string& name, const string& version)
 
 	recs_.clear();
 	counter_ = 0;
-	append("P\t" + name + "\t" + version);
+	append("T");
+	if (fsync(fd_) == -1)
+		throw runtime_error_with_errno("could not synchronize " + journal_);
+}
+
+void txn::note_install(const string& name, const string& version)
+{
+	append("I\t" + name + "\t" + version);
+}
+
+void txn::note_remove(const string& name)
+{
+	append("R\t" + name);
+}
+
+// Everything the journal says must be on disk before the database changes
+void txn::commit_point()
+{
+	append("K");
 	if (fsync(fd_) == -1)
 		throw runtime_error_with_errno("could not synchronize " + journal_);
 }
@@ -187,7 +205,10 @@ bool txn::recover(const string& root, ostream& out)
 		return false;
 
 	vector<record> recs;
-	string name, version, line;
+	vector<pair<string, string> > installs;         // (name, version)
+	vector<string> removals;
+	string legacy_name, legacy_version, line;
+	bool commit_point = false;
 
 	while (getline(in, line)) {
 		vector<string> f;
@@ -199,9 +220,15 @@ bool txn::recover(const string& root, ostream& out)
 				break;
 			pos = tab + 1;
 		}
-		if (f.size() == 3 && f[0] == "P") {
-			name = f[1];
-			version = f[2];
+		if (f.size() == 3 && f[0] == "P") {             // journal of the one-package format
+			legacy_name = f[1];
+			legacy_version = f[2];
+		} else if (f.size() == 3 && f[0] == "I") {
+			installs.push_back(make_pair(f[1], f[2]));
+		} else if (f.size() == 2 && f[0] == "R") {
+			removals.push_back(f[1]);
+		} else if (f.size() == 1 && f[0] == "K") {
+			commit_point = true;
 		} else if (f.size() == 2 && (f[0] == "C" || f[0] == "D")) {
 			record r = { f[0][0], f[1], "", 0, 0, 0 };
 			recs.push_back(r);
@@ -217,22 +244,35 @@ bool txn::recover(const string& root, ostream& out)
 	}
 	in.close();
 
-	// The database commit is the commit point: if it already lists the new
-	// version the installation is finished, otherwise it is undone.
+	// The database commit is the commit point. Without a K it cannot have happened.
+	// With one, the run is finished if the database shows the result of every
+	// operation, and undone otherwise.
 	bool committed = false;
-	if (!name.empty()) {
+	if (!legacy_name.empty()) {
 		database db(root);
 		db.open(false);
-		committed = db.has(name) && db.packages().find(name)->second.version == version;
+		committed = db.has(legacy_name) && db.packages().find(legacy_name)->second.version == legacy_version;
+	} else if (commit_point) {
+		database db(root);
+		db.open(false);
+		committed = true;
+		for (size_t i = 0; i < installs.size() && committed; i++) {
+			packages_t::const_iterator p = db.packages().find(installs[i].first);
+			committed = p != db.packages().end() && p->second.version == installs[i].second;
+		}
+		for (size_t i = 0; i < removals.size() && committed; i++)
+			committed = !db.has(removals[i]);
 	}
+
+	string what = !legacy_name.empty() ? "installation of " + legacy_name + " " + legacy_version
+		: "transaction (" + itos(installs.size()) + " install/upgrade, " + itos(removals.size()) + " removal)";
 
 	if (committed) {
 		finish(recs);
-		out << "tatami: finished an interrupted installation of " << name << " " << version << endl;
+		out << "tatami: finished an interrupted " << what << endl;
 	} else {
 		undo(recs);
-		out << "tatami: rolled back an interrupted installation"
-		    << (name.empty() ? string() : " of " + name + " " + version) << endl;
+		out << "tatami: rolled back an interrupted " << what << endl;
 	}
 
 	unlink(journal.c_str());

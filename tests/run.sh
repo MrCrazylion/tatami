@@ -683,6 +683,84 @@ has_data "version TWO" && ok "the committed content is kept" || bad "committed c
 absent "journal removed" var/lib/tatami/transaction.journal
 ROOT="$ROOT_MAIN"
 
+echo "# one transaction per run: all or nothing, across packages"
+ROOT="$T/root-gtx"; rm -rf "$ROOT"; mkdir -p "$ROOT/etc"
+python3 - "$T" "$EXT" <<'PY'
+import tarfile, io, sys
+t, ext = sys.argv[1], sys.argv[2]
+def add(tf, name, data=None, typ=tarfile.REGTYPE, mode=0o644, link=""):
+    i = tarfile.TarInfo(name); i.type = typ; i.mode = mode; i.linkname = link
+    if typ == tarfile.REGTYPE:
+        i.size = len(data); tf.addfile(i, io.BytesIO(data))
+    else:
+        tf.addfile(i)
+def pkg(name, version, files, replaces=None, broken=False):
+    with tarfile.open("%s/g%s_%s.%s" % (t, name, version, ext), "w:gz") as tf:
+        meta = "name: %s\nversion: %s\n" % (name, version)
+        if replaces: meta += "replaces: %s\n" % replaces
+        add(tf, ".META", meta.encode())
+        add(tf, "usr/", typ=tarfile.DIRTYPE, mode=0o755)
+        add(tf, "usr/share/", typ=tarfile.DIRTYPE, mode=0o755)
+        for f, c in sorted(files.items()):
+            add(tf, f, c.encode())
+        if broken:
+            add(tf, "usr/share/zzz-broken", typ=tarfile.LNKTYPE, link="no/such/target")
+pkg("g1", "1", {"usr/share/g1": "g1\n"})
+pkg("g2", "1", {"usr/share/g2": "g2\n"})
+pkg("g3", "1", {"usr/share/g3": "g3\n"}, broken=True)
+pkg("up", "1", {"usr/share/up": "up v1\n", "usr/share/up-old": "gone in v2\n"})
+pkg("up", "2", {"usr/share/up": "up v2\n", "usr/share/up-new": "new in v2\n"})
+pkg("old", "1", {"usr/share/shared": "old\n", "usr/share/old-only": "old only\n"})
+pkg("new", "1", {"usr/share/shared": "new\n", "usr/share/new-only": "new only\n"}, replaces="old")
+pkg("newbad", "1", {"usr/share/shared": "new\n", "usr/share/new-only": "new only\n"}, replaces="old", broken=True)
+PY
+G() { ty install "$@"; }
+check "set up: up 1 and old 1" 0 ty install "$T/gup_1.$EXT" "$T/gold_1.$EXT"
+before=$(snap)
+check "a run whose third package fails is refused" 1 G "$T/gg1_1.$EXT" "$T/gup_2.$EXT" "$T/gg3_1.$EXT"
+has "it says what it does" "rolling back the whole transaction"
+has "and that nothing was changed" "the transaction failed, nothing was changed"
+after=$(snap)
+[ "$before" = "$after" ] && ok "the filesystem is exactly as before: the two good packages were undone too" || bad "partial state left" "$(diff <(echo "$before") <(echo "$after") | head -8)"
+check "g1 was not installed" 1 t files g1
+has_up=$(t list 2>&1); echo "$has_up" | grep -q "^up/1 \[installed\]" && ok "up is still version 1 in the database" || bad "database changed" "$has_up"
+[ "$(cat "$ROOT/usr/share/up")" = "up v1" ] && [ -f "$ROOT/usr/share/up-old" ] && ok "up's files are version 1 again, nothing was deleted" || bad "upgrade not undone"
+[ "$(find "$ROOT" -name '.tatami-bak*' | wc -l)" = 0 ] && [ ! -e "$ROOT/var/lib/tatami/transaction.journal" ] && ok "no backups and no journal are left" || bad "leftovers"
+# removal in the same run: old is replaced by new, which takes over a file
+before=$(snap)
+check "the replacing package fails: old must survive untouched" 1 G "$T/gnewbad_1.$EXT"
+after=$(snap)
+[ "$before" = "$after" ] && ok "old's files are all still there" || bad "removal was not undone" "$(diff <(echo "$before") <(echo "$after") | head -8)"
+t list 2>&1 | grep -q "^old/1 \[installed\]" && ok "old is still in the database" || bad "old lost from the database"
+check "the run that works: new replaces old, g1 and up 2 come along" 0 G "$T/gnew_1.$EXT" "$T/gg1_1.$EXT" "$T/gup_2.$EXT"
+[ "$(cat "$ROOT/usr/share/shared")" = new ] && ok "the file both packages list now belongs to new, with the new content" || bad "shared file" "$(cat "$ROOT/usr/share/shared")"
+[ ! -e "$ROOT/usr/share/old-only" ] && [ -f "$ROOT/usr/share/new-only" ] && ok "old's other files are gone only after the commit" || bad "old-only handling"
+[ ! -e "$ROOT/usr/share/up-old" ] && [ "$(cat "$ROOT/usr/share/up")" = "up v2" ] && ok "up 2 replaced up 1, its dropped file is deleted" || bad "upgrade result"
+t list 2>&1 | grep -q "^old/" && bad "old still listed" || ok "old is no longer in the database"
+[ "$(find "$ROOT" -name '.tatami-bak*' | wc -l)" = 0 ] && [ ! -e "$ROOT/var/lib/tatami/transaction.journal" ] && ok "backups and journal are cleaned up" || bad "leftovers after success"
+
+echo "# a run killed with SIGKILL is undone, or finished, by the next run"
+ROOT="$T/root-kill"; rm -rf "$ROOT"; mkdir -p "$ROOT/etc"
+check "set up: up 1 and old 1" 0 ty install "$T/gup_1.$EXT" "$T/gold_1.$EXT"
+before=$(snap)
+{ TATAMI_CRASH_AT=extracted "$TATAMI" -r "$ROOT" -c "$CONF" -y install "$T/gnew_1.$EXT" "$T/gg1_1.$EXT" "$T/gup_2.$EXT" >/dev/null 2>&1; rc=$?; } 2>/dev/null
+[ $rc -eq 137 ] && ok "tatami was killed (SIGKILL) after extracting everything, before the commit" || bad "not killed (exit $rc)"
+[ -e "$ROOT/var/lib/tatami/transaction.journal" ] && [ -f "$ROOT/usr/share/g1" ] && [ -f "$ROOT/usr/share/up-new" ] && ok "the half-done run is on disk: journal, new files" || bad "no half-done state"
+OUT=$(ty remove nothing-here 2>&1)
+has "the next run rolls back the whole transaction" "rolled back an interrupted transaction \(3 install/upgrade, 1 removal\)"
+after=$(snap)
+[ "$before" = "$after" ] && ok "every package of the killed run is undone, the system is as before" || bad "state differs after recovery" "$(diff <(echo "$before") <(echo "$after") | head -8)"
+LST=$(t list 2>&1); echo "$LST" | grep -q "^up/1 \[installed\]" && echo "$LST" | grep -q "^old/1 \[installed\]" && ok "database untouched" || bad "database changed" "$LST"
+{ TATAMI_CRASH_AT=committed "$TATAMI" -r "$ROOT" -c "$CONF" -y install "$T/gnew_1.$EXT" "$T/gg1_1.$EXT" "$T/gup_2.$EXT" >/dev/null 2>&1; rc=$?; } 2>/dev/null
+[ $rc -eq 137 ] && ok "tatami was killed after the database commit, before the old files were deleted" || bad "not killed (exit $rc)"
+[ -e "$ROOT/usr/share/old-only" ] && [ -e "$ROOT/usr/share/up-old" ] && ok "the old files are still there at that moment" || bad "deleted too early"
+OUT=$(ty remove nothing-here 2>&1)
+has "the next run finishes it" "finished an interrupted transaction \(3 install/upgrade, 1 removal\)"
+[ ! -e "$ROOT/usr/share/old-only" ] && [ ! -e "$ROOT/usr/share/up-old" ] && [ "$(cat "$ROOT/usr/share/shared")" = new ] && ok "deferred deletions done, the shared file is new's" || bad "not finished"
+[ "$(find "$ROOT" -name '.tatami-bak*' | wc -l)" = 0 ] && [ ! -e "$ROOT/var/lib/tatami/transaction.journal" ] && ok "backups and journal removed" || bad "leftovers after recovery"
+LST=$(t list 2>&1); echo "$LST" | grep -q "^new/1 \[installed\]" && echo "$LST" | grep -q "^up/2 \[installed\]" && ok "the committed database is intact" || bad "database wrong" "$LST"
+ROOT="$ROOT_MAIN"
+
 # ---------------------------------------------------------------------------
 # helpers for the sections below: build a package with its own tiny recipe
 #   mkp <repo-dir> <name> <version> <arch|-> <depends|-> [path:content]...

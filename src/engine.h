@@ -4,6 +4,7 @@
 #include "config.h"
 #include "db.h"
 #include "hooks.h"
+#include "txn.h"
 #include <regex.h>
 #include <memory>
 #include <set>
@@ -19,16 +20,32 @@ class engine {
 public:
 	engine(const config_t& cfg, database& db, bool force);
 
+	// A transaction is every install, upgrade and removal of one run, all or nothing:
+	//
+	//   begin();  install(...); remove(...); ...  commit();     // or rollback()
+	//
+	// install() and remove() only extract files (every change recorded in the
+	// undo journal) and change the database in memory. Nothing is deleted and
+	// nothing is committed until commit(), which makes the whole run visible at
+	// once: deferred deletions are journalled, the database is written, then the
+	// old files go. If anything fails, rollback() restores every file touched by
+	// the run and forgets the in-memory database changes. A run killed in the
+	// middle is undone by txn::recover() the next time tatami starts.
+	void begin();
+
 	// Installs or upgrades (if the package is already installed) a package file.
 	// 'requested' is true if the user asked for this package, false if it is
 	// only installed to satisfy a dependency.
-	//
-	// All or nothing: the files are extracted first, with every change
-	// recorded; if anything fails the filesystem is restored exactly and the
-	// database is left untouched. The database is committed only after the
-	// whole package was extracted.
 	void install(const string& filename, bool requested);
 	void remove(const string& name);
+
+	// Commits the transaction. Throws (and leaves the transaction to rollback())
+	// if the database cannot be written.
+	void commit();
+
+	// Undoes the transaction: restores the filesystem, reloads the database.
+	// Does nothing when no transaction is open.
+	void rollback();
 
 	// Checks the hook files; call before changing anything
 	void check_hooks();
@@ -54,6 +71,9 @@ private:
 
 	database& db_;
 	bool force_;
+	unique_ptr<txn> tx_;                    // the open transaction
+	set<string> doomed_;                    // files to delete at commit unless a package still owns them
+	vector<pair<string, set<string> > > hook_log_;  // (operation, files), given to the hooks at commit
 	hook_runner hooks_;
 	vector<compiled_rule> rules_;
 };

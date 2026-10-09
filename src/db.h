@@ -60,18 +60,20 @@ public:
 	// only, nothing is deleted from disk)
 	void unreference(const set<string>& files);
 
-	// Removes a package from the database and deletes its files, except files
-	// in keep_list and files still owned by another package.
-	void rm_pkg(const string& name, const set<string>& keep_list = set<string>());
+	// Forgets a package (database only, in memory until commit(); its files stay
+	// on disk until the transaction that removes it commits)
+	void drop_pkg(const string& name);
 
-	// Removes the given files from all packages and from disk (except keep_list)
-	void rm_files(set<string> files, const set<string>& keep_list);
+	// Every file listed by any installed package
+	set<string> owned_files() const;
 
-	set<string> find_conflicts(const string& name, const set<string>& files) const;
+	// Files of 'files' that another package owns or that already exist on disk. Files
+	// in 'doomed' (to be deleted when the running transaction commits) do not count
+	// as existing.
+	set<string> find_conflicts(const string& name, const set<string>& files,
+				   const set<string>& doomed = set<string>()) const;
 
 private:
-	void remove_files(const set<string>& files) const;
-
 	string root_;
 	packages_t packages_;
 	map<string, pkgmeta> metas_;
