@@ -1,0 +1,240 @@
+.TH TATAMK 8 "" "tatami"
+.SH NAME
+tatamk \- build tatami packages from a recipe
+.SH SYNOPSIS
+.B tatamk
+.RI [ options ]
+.SH DESCRIPTION
+.B tatamk
+reads a recipe, the
+.BR Tatamifile ,
+in the current directory, builds the software it describes into a staging directory
+and packs the result into a package for
+.BR tatami (8).
+The recipe format is that of the pkgutils
+.BR Pkgfile ,
+with real dependency fields.
+.PP
+The package is named
+.IB name _ version [\- release ]_ arch .tar. compression
+for example
+.BR zlib_1.3.2\-1_x86_64.tar.zst ,
+and is written to the output directory.
+.SH THE TATAMIFILE
+The recipe is a bash fragment.
+A line of the form
+.B # Description: \fItext\fR
+gives the package a description.
+.TP
+.B name, version
+Required. Names and versions may not contain an underscore; the name must start with
+a letter or digit.
+.TP
+.B release
+Optional; the package version becomes
+.IB version \- release\fR.
+.TP
+.B source
+An array of files or URLs.
+URLs are downloaded next to the recipe unless the file is already there;
+other files are taken from the recipe's directory.
+If a file
+.B .md5sum
+exists, the sources are checked against it.
+Archives (tar, zip) are unpacked into the source directory, other files copied.
+.TP
+.B depends, conflicts, provides, replaces
+Arrays of relations, one per element:
+.BR libfoo ,
+.BR "libbar >= 2.0" ,
+.BR "a | b" .
+An element may not contain a comma.
+.TP
+.B arch
+Optional. The default is the first architecture of
+.B ARCH
+in
+.BR tatami.conf (5)
+or else the output of
+.BR "uname \-m" .
+.BR noarch ,
+.B all
+and
+.B any
+mean a package that is not tied to an architecture.
+.TP
+.B build()
+Required. It is run in the source directory
+.RB ( $SRC )
+and must install into
+.BR $PKG ,
+for example with
+.BR "make DESTDIR=$PKG install" .
+.SS Example
+.nf
+# Description: Compression library
+name=zlib
+version=1.3.2
+release=1
+source=(https://example.org/zlib\-$version.tar.gz)
+
+build() {
+        cd zlib\-$version
+        ./configure \-\-prefix=/usr
+        make
+        make DESTDIR=$PKG install
+}
+.fi
+.SH INSTALL SCRIPTS
+If a file named
+.B tatami.install
+exists in the same directory as the
+.BR Tatamifile ,
+it is bundled automatically into the root of the package as the hidden file
+.BR .INSTALL ;
+nothing needs to be set in the recipe.
+It may define two bash functions:
+.TP
+.B pre_install
+Run by
+.BR tatami (8)
+before the package's files are extracted. If it exits non\-zero the whole
+transaction is rolled back.
+.TP
+.B post_install
+Run after the transaction was committed. A failure is only reported.
+.PP
+Both receive the package version as their argument and find the installation root in
+.BR TATAMI_ROOT .
+There are no scripts for removal.
+.B .INSTALL
+is not installed as a file.
+.SH SIGNING
+If a signing key exists, the build signs its results as part of the build.
+The key is the file named by the environment variable
+.B TATAMI_PRIVKEY
+(which must exist), otherwise
+.BR ~/.tatami/privkey ;
+it is made with
+.BR "tatami keygen" .
+Right after the package is written,
+.B tatamk
+.IP \(bu 3
+refreshes the index
+.B repo.solv
+of the output directory, which records the SHA\-256 checksum of every package in it,
+.IP \(bu 3
+signs the package, writing
+.IB package .sig,
+.IP \(bu 3
+signs the index, writing
+.BR repo.solv.sig .
+.PP
+Publish all of these files together; clients configure the public key as
+.B PUBKEY
+(see
+.BR tatami.conf (5)).
+Without a key, packages are built unsigned and the output directory is not indexed.
+.SH OPTIONS
+.TP
+.BR \-f ", " \-\-file " " \fIrecipe\fP
+Recipe to build (default
+.BR Tatamifile ).
+.TP
+.BR \-o ", " \-\-output " " \fIdir\fP
+Where to put the package (default: the current directory).
+.TP
+.BR \-c ", " \-\-config " " \fIfile\fP
+Use this configuration file instead of
+.BR /etc/tatami/tatami.conf .
+.TP
+.BR \-z ", " \-\-compression " " \fIc\fP
+One of
+.BR gz ,
+.B zst
+(the default),
+.BR xz ,
+.BR bz2 ,
+.BR lz4 ,
+.B lzma
+or
+.BR none .
+Compression is done by tatami itself.
+.TP
+.BR \-k ", " \-\-keep\-work
+Do not remove the work directory.
+.TP
+.BR \-\-no\-bulkhead ", " \-\-no\-sandbox
+Build on the host, without the sandbox.
+.TP
+.B \-\-bulkhead
+Use the sandbox even if the configuration turns it off.
+.TP
+.B \-\-no\-sign
+Do not sign, even if a key exists.
+.TP
+.BR \-v ", " \-\-version
+Print the version and exit.
+.TP
+.BR \-h ", " \-\-help
+Print a short help and exit.
+.SH SANDBOX
+By default
+.B build()
+runs in a
+.BR bwrap (1)
+sandbox, started through
+.BR "tatami bulkhead" :
+the system is read\-only, the network is unshared, and only a temporary
+build directory and the package root are writable.
+The sandbox is required then; if
+.B bwrap
+is missing the build fails instead of running unprotected.
+It can be turned off with
+.BR \-\-no\-bulkhead
+or
+.BR "BULKHEAD = no"
+in
+.BR tatami.conf (5).
+.SH ENVIRONMENT
+.TP
+.B TATAMI
+The tatami binary used for packing, indexing, signing and the sandbox
+(default: found in
+.BR PATH ).
+.TP
+.B TATAMI_PRIVKEY
+The signing key.
+.TP
+.B PKG_EXT
+Use this package extension instead of
+.BR tar.\fIcompression\fR .
+.SH FILES
+.TP
+.B Tatamifile
+The recipe.
+.TP
+.B tatami.install
+Optional install script, bundled as
+.BR .INSTALL .
+.TP
+.B .md5sum
+Optional checksums of the sources.
+.TP
+.B /etc/tatami/tatami.conf
+Configuration (the keys
+.BR PKG_EXT ,
+.BR PKG_COMPRESSION ,
+.BR ARCH
+and
+.BR BULKHEAD
+are used).
+.TP
+.B ~/.tatami/privkey
+The default signing key.
+.SH EXIT STATUS
+.B 0
+if the package was built, non\-zero otherwise.
+.SH SEE ALSO
+.BR tatami (8),
+.BR tatami.conf (5)

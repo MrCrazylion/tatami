@@ -25,6 +25,7 @@ $ make
 $ make install                      # or: make DESTDIR=/some/other/path install
 $ make PKG_EXT=myext                # build with your own package extension
 $ make STATIC=yes                   # fully static binary
+$ man ./man/tatami.8                 # manual pages: tatami(8), tatamk(8), tatami.conf(5); installed by make install
 $ make check                        # end-to-end tests (needs root)
 $ make clean                        # keeps the built libraries
 $ make distclean                    # also removes the deps/*/cmake-build directories

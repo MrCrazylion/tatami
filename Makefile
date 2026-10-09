@@ -294,6 +294,9 @@ install: all
 		$(DESTDIR)$(VARDIR)/packages
 	install -m0755 tatami $(DESTDIR)$(BINDIR)/tatami
 	install -m0755 tatamk $(DESTDIR)$(BINDIR)/tatamk
+	mkdir -p $(DESTDIR)$(MANDIR)/man8 $(DESTDIR)$(MANDIR)/man5
+	install -m0644 man/tatami.8 man/tatamk.8 $(DESTDIR)$(MANDIR)/man8/
+	install -m0644 man/tatami.conf.5 $(DESTDIR)$(MANDIR)/man5/
 	@if [ -e $(DESTDIR)$(ETCDIR)/tatami/tatami.conf ]; then \
 		echo "keeping existing $(DESTDIR)$(ETCDIR)/tatami/tatami.conf"; \
 	else \

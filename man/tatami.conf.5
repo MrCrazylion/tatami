@@ -1,0 +1,307 @@
+.TH TATAMI.CONF 5 "" "tatami"
+.SH NAME
+tatami.conf \- configuration of tatami and tatamk, repository lists and hooks
+.SH DESCRIPTION
+.B tatami.conf
+configures
+.BR tatami (8)
+and
+.BR tatamk (8).
+It is optional: if it is missing, empty or unreadable the built\-in defaults are used
+and tatami works offline with the local repository
+.BR /var/lib/tatami/packages .
+A file given with
+.B \-\-config
+must exist.
+.PP
+All paths in this manual are relative to the installation root
+.RB ( \-\-root ,
+default
+.BR / ).
+They are the defaults of the build; the base directories
+.RB ( /etc ,
+.B /var/lib/tatami
+and
+.BR /var/cache/tatami )
+can be changed when tatami is compiled.
+.SH SYNTAX
+The file has one entry per line.
+Empty lines and lines starting with
+.B #
+are ignored.
+.PP
+A setting is
+.IB NAME " = " value
+with optional blanks around the equals sign; the value may be quoted.
+A line that is not a setting is a rule (see below).
+An unknown setting or a malformed line is an error that names the file and the line.
+.SH SETTINGS
+.TP
+.B PKG_EXT
+A fixed package extension without the leading dot, for example
+.BR tar.pkg .
+By default packages are named
+.B \&.tar.\fIcompression\fR
+and every compression is accepted.
+.TP
+.B PKG_COMPRESSION
+.BR tatamk 's
+compression: one of
+.BR gz ,
+.B zst
+(the default),
+.BR xz ,
+.BR bz2 ,
+.BR lz4 ,
+.B lzma
+or
+.BR none .
+.TP
+.B ARCH
+Architecture of the target system; the default is
+.BR "uname \-m" .
+Packages of any other architecture are refused;
+.B noarch
+packages always fit.
+A colon\-separated list, such as
+.BR x86_64:i686 ,
+allows more (multilib).
+.BR tatamk
+builds for the first entry.
+.TP
+.B REPO_DIRS
+Repositories as paths or URLs separated by blanks, used when no
+.B repos.conf
+exists (see
+.BR REPOSITORIES ).
+.TP
+.B FETCHCMD
+The command that downloads a remote file.
+.B %URL%
+and
+.B %DEST%
+are replaced; both must appear.
+It is run directly, not through a shell, so quoting protects blanks but nothing in a
+URL is interpreted.
+tatami reads the command's standard error for percentages such as the ones
+.B curl \-#
+prints and shows its own progress bar instead.
+Default:
+.RS
+.PP
+.nf
+\fBcurl \-f \-L \-# "%URL%" \-o "%DEST%"\fR
+.fi
+.RE
+.IP
+It is never used for local paths or
+.B file://
+repositories.
+.TP
+.B PUBKEY
+The Ed25519 public key (64 hexadecimal digits, or base64 of the 32 bytes) that signs
+the remote repositories, as printed by
+.BR "tatami keygen" .
+For every remote
+.B repo.solv
+and package a
+.B .sig
+file is fetched and verified; a failure aborts.
+Local paths and
+.B file://
+repositories are trusted and never checked.
+Without a
+.B PUBKEY
+remote repositories are refused;
+.B PUBKEY = none
+accepts unsigned remote data (the SHA\-256 checksums of the index are still checked).
+.TP
+.B HoldPkg
+Space\-separated names of installed packages that are never upgraded or removed as a
+side effect by a transaction.
+They are handed to the solver as locked, and
+.B tatami upgrade
+prints
+.B Skipping upgrade for held package: \fIname\fB (\fIold\fB \-> \fInew\fB)
+for each one that has a newer version.
+The setting may be repeated and the names add up.
+A package named in the
+.B install
+or
+.B remove
+command itself is not held for that command:
+an explicit request wins.
+.TP
+.B BULKHEAD
+.B yes
+(the default) or
+.BR no :
+whether
+.BR tatamk
+builds in a
+.BR bwrap (1)
+sandbox.
+.SH RULES
+.IB EVENT " " pattern " " ACTION
+.PP
+.I EVENT
+is
+.B UPGRADE
+or
+.BR INSTALL ,
+.I pattern
+a POSIX extended regular expression matched against the path of a package file
+relative to the root, without a leading slash (for example
+.BR ^etc/.*$ ),
+and
+.I ACTION
+is
+.B YES
+or
+.BR NO .
+For each file the last matching rule wins; a file that no rule matches is treated as
+.BR YES .
+.TP
+.B UPGRADE ... NO
+Marks a configuration file.
+When an upgrade brings a different version of a file that exists,
+the new version is installed and the existing file is renamed to
+.IB file .old
+(an identical file is left alone, an earlier
+.B .old
+is replaced).
+A rollback puts the original back.
+.TP
+.B INSTALL ... NO
+The file is not installed at all.
+.PP
+The default configuration has one rule:
+.PP
+.RS
+.B UPGRADE ^etc/.*$ NO
+.RE
+.SH REPOSITORIES
+Repositories are listed in
+.B /etc/tatami/repos.conf
+and in the files
+.B /etc/tatami/repos.d/*.conf
+(read in alphabetical order), one per line:
+.PP
+.RS
+.nf
+.IB name " = " url
+.fi
+.RE
+.PP
+.I name
+is made of letters, digits,
+.BR . ,
+.B _
+and
+.BR \- ;
+it must be unique.
+.I url
+is one of
+.TP
+.B /path or file:///path
+A local directory of packages, read in place.
+If it contains a
+.B repo.solv
+(written by
+.BR "tatami index" )
+that index is used, otherwise the packages are scanned.
+.TP
+.B http://, https://, ftp://
+A remote repository.
+.B tatami update
+downloads its
+.B repo.solv
+to
+.BR /var/lib/tatami/repos/\fIname\fB/ ,
+and
+.B tatami install
+downloads packages to
+.BR /var/cache/tatami/packages ,
+both with
+.BR FETCHCMD ,
+and verifies them (see
+.BR PUBKEY ).
+Publish such a repository by putting the packages and the files made by
+.BR tatamk (8)
+(the index and the signatures) on a server.
+.PP
+If the list is empty or the files do not exist, the
+.B REPO_DIRS
+setting is used, and failing that the local directory
+.BR /var/lib/tatami/packages .
+Nothing is ever downloaded unless a remote repository is configured explicitly.
+When a version is in several repositories, the one listed first wins.
+.SH HOOKS
+Hook files
+.B /etc/tatami/hooks.d/\fIname\fB.hook
+say what to run after a transaction.
+They have
+.I Key = value
+lines:
+.TP
+.B Trigger
+A POSIX extended regular expression, matched against the paths the transaction added,
+changed or removed (relative to the root; directories end in
+.BR / ).
+May be repeated; the hook runs if any matches.
+.TP
+.B Operation
+Optional: any of
+.BR install ,
+.B upgrade
+and
+.BR remove .
+The default is all.
+.TP
+.B Needs
+Optional: a path that must exist in the root for the hook to run.
+.TP
+.B Exec
+The command.
+Blanks separate the words, quotes group them, and there is no shell.
+.B %ROOT%
+is replaced by the installation root, and
+.B TATAMI_ROOT
+is set.
+.PP
+A hook runs at most once per transaction, after the commit.
+A failing hook is reported but does not undo the transaction; a malformed one is
+detected before anything is changed.
+The installed example runs
+.B ldconfig \-r %ROOT%
+when libraries change.
+.SH FILES
+.TP
+.B /etc/tatami/tatami.conf
+This file.
+.TP
+.B /etc/tatami/repos.conf, /etc/tatami/repos.d/*.conf
+Repository lists.
+.TP
+.B /etc/tatami/hooks.d/*.hook
+Hooks.
+.SH EXAMPLE
+.nf
+PUBKEY      = 05ad836299e2a530bbffd0b4da78f6bc88189250b32c654c4ef8db13ea09e3be
+HoldPkg     = linux glibc
+ARCH        = x86_64
+PKG_COMPRESSION = zst
+
+UPGRADE     ^etc/.*$     NO
+.fi
+.PP
+and in
+.BR /etc/tatami/repos.conf :
+.PP
+.nf
+core  = https://packages.example.org/core
+local = /srv/packages
+.fi
+.SH SEE ALSO
+.BR tatami (8),
+.BR tatamk (8)

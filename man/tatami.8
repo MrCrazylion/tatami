@@ -1,0 +1,343 @@
+.TH TATAMI 8 "" "tatami"
+.SH NAME
+tatami \- package manager with dependency resolution and atomic transactions
+.SH SYNOPSIS
+.B tatami
+.RI [ options ]
+.I command
+.RI [ arguments ]
+.br
+.B tatami keygen
+.RB [ \-f ]
+.RI [ file ]
+.br
+.B tatami sign
+.I file
+.RI [ keyfile ]
+.SH DESCRIPTION
+.B tatami
+installs, upgrades and removes binary packages.
+It is built on the design of pkgutils: a plain\-text package database, packages
+that are tar archives, and a separate tool,
+.BR tatamk (8),
+that builds them.
+Dependencies are resolved by libsolv; archives are read and written by libarchive.
+The libraries are built into the program (linked as static archives), so no external
+program is needed to handle any of the supported compression formats (gzip, zstd,
+xz, lzma, bzip2, lz4).
+.PP
+Packages are named
+.IB name _ version [\- release ]_ arch .tar. compression
+for example
+.BR zlib_1.3.2\-1_x86_64.tar.zst .
+Everything tatami reads or writes is below the installation root
+.RB ( \-\-root ),
+which is
+.B /
+by default.
+.SH COMMANDS
+.TP
+.B update
+Prepare the repositories listed in
+.BR tatami.conf (5):
+write the
+.B repo.solv
+index of each local repository, and download the index of each remote one.
+.TP
+.BI index " dir" ...
+Write the binary index
+.I dir\fB/repo.solv
+of one or more local repository directories.
+It holds the metadata and the SHA\-256 checksum of every package.
+.TP
+.BI install " package" "|" file ...
+Install packages and the dependencies they need, or upgrade them if they are
+installed.
+.I package
+is a name, optionally
+.IB name = version\fR;
+.I file
+is a package file, which is installed directly.
+Packages that are installed only as dependencies are marked as such.
+.TP
+.BI remove " package" ...
+Remove packages, everything that depends on them, and the dependencies that are
+then no longer needed by a package that was installed explicitly.
+There is no separate autoremove command.
+.TP
+.B upgrade
+Upgrade all installed packages that have a newer version available.
+Packages named in
+.B HoldPkg
+are skipped, each with a notice.
+.TP
+.BI search " regex"
+Search names and descriptions in the repository indexes.
+.TP
+.BI show " package" ...
+Show details of a package: version, architecture, relations, size, file,
+SHA\-256 checksum, and whether it is installed (and why).
+.TP
+.BR list " [" \fIregex\fP ]
+List installed packages; with
+.B \-\-upgradable
+those that have a newer version, with
+.B \-\-available
+the packages of the repositories instead.
+.TP
+.BI files " package" "|" file
+List the files of an installed package or of a package file.
+.TP
+.BI owns " regex"
+Find the installed package that owns files matching the pattern.
+.TP
+.BR keygen " [" \-f "] [" \fIfile\fP ]
+Make an Ed25519 key pair.
+The private key is written to
+.I file
+(default
+.B $TATAMI_PRIVKEY
+or
+.BR ~/.tatami/privkey ,
+mode 0600), the public key to
+.IR file .pub,
+and the
+.B PUBKEY
+line for
+.BR tatami.conf (5)
+is printed.
+An existing key is replaced only with
+.BR \-f .
+.TP
+.BI sign " file " [ keyfile ]
+Write
+.IR file .sig,
+the Ed25519 signature of a file, with the key
+.I keyfile
+(default as for
+.BR keygen ).
+.PP
+The commands
+.B pack
+and
+.B bulkhead
+are used by
+.BR tatamk (8)
+and are not meant to be called by hand.
+.SH OPTIONS
+.TP
+.BR \-y ", " \-\-yes
+Do not ask for confirmation.
+Without a terminal tatami refuses to continue unless this is given.
+.TP
+.BR \-f ", " \-\-force
+Overwrite files that belong to another package or that already exist.
+.TP
+.BR \-s ", " \-\-simulate
+Show what would be done and change nothing.
+Commands that modify the system then need no root privileges.
+.TP
+.BR \-r ", " \-\-root " " \fIpath\fP
+Use
+.I path
+as the installation root.
+The database, journal, configuration, repositories, caches, hooks and the
+extraction all live below it.
+Symbolic links inside the root, including absolute ones and a merged
+.B /lib \-> usr/lib
+layout, are followed as if the root were
+.BR / ,
+so nothing is ever written outside of it.
+.TP
+.BR \-c ", " \-\-config " " \fIfile\fP
+Read this configuration file instead of
+.BR <root>/etc/tatami/tatami.conf .
+It must exist.
+.TP
+.B \-\-installed, \-\-upgradable, \-\-available
+Select what
+.B list
+shows.
+.TP
+.BR \-v ", " \-\-version
+Print the version and exit.
+.TP
+.BR \-h ", " \-\-help
+Print a short help and exit.
+.PP
+Commands that modify the system can only be run by root.
+.SH TRANSACTIONS
+Everything one command does \- all the installations, upgrades and removals of its
+plan \- is a single transaction: it is applied completely or not at all.
+.PP
+Before anything is extracted tatami adds up the unpacked size of the incoming
+packages and refuses to continue if the free space of the root's filesystem,
+with a small safety margin, would not be enough.
+Remote packages are downloaded and verified first.
+.PP
+Every change the extraction makes is recorded in an undo journal,
+.BR <root>/var/lib/tatami/transaction.journal ,
+before it is made: files and directories that are created, files that are
+overwritten (moved aside in their own directory), and directory modes.
+The package database is only changed in memory, and removed files are not deleted yet.
+.PP
+When every package has been extracted the deletions are journalled, the journal gets
+a commit record, the database is written with an atomic rename, and only then are the
+old files and the backups removed.
+The packages that were downloaded for the transaction are deleted from the cache.
+.PP
+If anything fails, in any package, tatami rolls back every package of the run:
+created files are removed, overwritten files restored, and the database,
+which was never written, is reloaded.
+The downloaded packages stay in the cache for a retry.
+.PP
+If tatami is killed (even with SIGKILL) or the machine loses power during a
+transaction, the next command that modifies the system reads the journal first.
+Without a commit record the whole run is rolled back; with one, the database
+decides: if it shows the result of every operation the run is finished,
+otherwise it is rolled back.
+.SH CONFIGURATION FILES
+A file that an
+.B UPGRADE
+rule of
+.BR tatami.conf (5)
+says
+.B NO
+to is treated as a configuration file (by default everything below
+.BR etc/ ).
+When an upgrade brings a version that differs from the file on disk, the new file is
+installed and the existing one is renamed to
+.IB file .old
+\- for example
+.BR /etc/foo.conf.old .
+An identical file is left alone and an earlier
+.B .old
+file is replaced.
+The rename is part of the transaction: a rollback puts the old file back.
+.SH SECURITY
+Packages and indexes can be signed with Ed25519 (RFC 8032, through libsodium).
+.B tatamk
+signs what it builds;
+.B tatami
+verifies what it downloads.
+.PP
+For a
+.I remote
+repository
+.B update
+fetches
+.B repo.solv
+and
+.BR repo.solv.sig ,
+and
+.B install
+fetches each package and its
+.BR .sig .
+Every file is verified with the key
+.B PUBKEY
+from
+.BR tatami.conf (5)
+before anything is stored or installed; a missing, malformed or wrong signature
+aborts the command.
+Cached indexes are verified again each time they are loaded, and cached packages are
+reused only if their signature still verifies.
+Without a
+.B PUBKEY
+a remote repository is refused, unless
+.B PUBKEY = none
+says that unsigned data is acceptable.
+.PP
+The index also contains the SHA\-256 checksum of every package.
+A package downloaded from a remote repository is hashed right after the download and
+must match the index, so a file substituted on the server is detected; a
+mismatch discards the download.
+.PP
+.I Local
+sources are trusted: a package file given on the command line, a repository given as
+a path or as a
+.B file://
+URL, are never checked for a signature or a checksum and need no key.
+.PP
+Downloads are made by the command
+.B FETCHCMD
+of the configuration file, which is run directly (not through a shell).
+Its progress output is replaced by tatami's own progress bar.
+tatami itself contains no network code.
+.SH INSTALL SCRIPTS
+A package built with a
+.B tatami.install
+file (see
+.BR tatamk (8))
+contains the script as the hidden member
+.BR .INSTALL ,
+which is never installed as a file.
+Its function
+.B pre_install
+runs before the package's files are extracted and
+.B post_install
+after the transaction was committed.
+Both receive the package version as
+.B $1
+and run with
+.B TATAMI_ROOT
+set to the installation root.
+If
+.B pre_install
+fails the transaction is rolled back; a failing
+.B post_install
+is only reported.
+The scripts run as root on the host, not chrooted.
+.SH HOOKS
+Files
+.B <root>/etc/tatami/hooks.d/*.hook
+describe what to run after a transaction, such as
+.BR ldconfig (8).
+See
+.BR tatami.conf (5).
+.SH FILES
+.TP
+.B /etc/tatami/tatami.conf
+Configuration.
+.TP
+.B /etc/tatami/repos.conf, /etc/tatami/repos.d/*.conf
+Repositories.
+.TP
+.B /etc/tatami/hooks.d/*.hook
+Post\-transaction hooks.
+.TP
+.B /var/lib/tatami/db
+The package database; next to it are
+.B meta/
+(metadata and install reasons of the installed packages) and
+.BR transaction.journal .
+.TP
+.B /var/lib/tatami/packages
+The default local repository.
+.TP
+.B /var/lib/tatami/repos/\fIname\fB/
+Downloaded indexes of remote repositories.
+.TP
+.B /var/cache/tatami/packages
+Downloaded packages, until their transaction commits.
+.TP
+.B ~/.tatami/privkey
+The default signing key.
+.PP
+All paths except the key are relative to the installation root. The directories can
+be changed when tatami is built (see the README).
+.SH ENVIRONMENT
+.TP
+.B TATAMI_PRIVKEY
+Private key used by
+.B sign
+and
+.BR keygen .
+.TP
+.B TATAMI_ROOT
+Set by tatami for install scripts and hooks.
+.SH EXIT STATUS
+.B 0
+on success, non\-zero if the command failed. A failed transaction changes nothing.
+.SH SEE ALSO
+.BR tatamk (8),
+.BR tatami.conf (5)
