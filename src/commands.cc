@@ -120,8 +120,9 @@ vector<repo_spec> repositories(const context& ctx)
 }
 
 // Reads the .META of every package in 'dir'. Packages that cannot be read are
-// skipped with a warning.
-vector<pkgmeta> scan_dir(const context& ctx, const string& dir)
+// skipped with a warning. With 'checksums' the SHA-256 of every package file is
+// computed too (what 'tatami index' stores in repo.solv; only remote clients use it).
+vector<pkgmeta> scan_dir(const context& ctx, const string& dir, bool checksums = false)
 {
 	vector<pkgmeta> index;
 	const vector<string> exts = package_extensions(ctx.cfg.pkg_ext);
@@ -148,6 +149,8 @@ vector<pkgmeta> scan_dir(const context& ctx, const string& dir)
 			pkgmeta meta = pkg_read_meta(path);
 			meta.filename = path;
 			meta.size = st.st_size;
+			if (checksums)
+				meta.checksum = file_sha256(path);
 			string fname, fversion, farch;
 			if (!split_package_filename(path, exts, fname, fversion, farch) ||
 			    fname != meta.name || fversion != meta.version ||
@@ -179,7 +182,7 @@ bool newer_than(const struct stat& a, const struct stat& b)
 // Writes <dir>/repo.solv for the packages of 'dir'; returns how many
 size_t index_dir(const context& ctx, const string& dir)
 {
-	vector<pkgmeta> entries = scan_dir(ctx, dir);
+	vector<pkgmeta> entries = scan_dir(ctx, dir, true);
 	const string solv = dir + "/repo.solv";
 	const string tmp = solv + ".tmp";
 
@@ -297,9 +300,18 @@ string fetch_package(const context& ctx, const plan_step& st)
 		throw signature_error("package " + url + " is remote but PUBKEY is not set in tatami.conf: "
 				      "set PUBKEY = <public key>, or PUBKEY = none to accept unsigned packages");
 
-	// a cached copy is only reused if its signature still verifies
+	// The index promises the SHA-256 of the file: what comes over the network must
+	// match it (this is what stops a substituted package). Local files are never
+	// checked this way. An index without checksums is refused, as it cannot tell.
+	if (st.checksum.empty())
+		throw runtime_error("the index of the remote repository has no checksum for " + file +
+				    " (run 'tatami index' on the server and 'tatami update' here)");
+
+	// a cached copy is only reused if its signature and checksum still verify
 	if (file_exists(cached)) {
 		try {
+			if (file_sha256(cached) != st.checksum)
+				throw runtime_error("checksum differs");
 			if (signed_)
 				verify_file(cached, cached + ".sig", ctx.cfg.pubkey_bytes);
 			pkgmeta m = pkg_read_meta(cached);
@@ -314,6 +326,12 @@ string fetch_package(const context& ctx, const plan_step& st)
 	cout << "Downloading " << file << "..." << endl;
 	const string part = cached + ".part";
 	fetch_url(ctx.cfg.fetchcmd, url, part, true);
+	const string got = file_sha256(part);
+	if (got != st.checksum) {
+		unlink(part.c_str());
+		throw runtime_error("CHECKSUM MISMATCH for " + url + ": the index promises sha256 " + st.checksum +
+				    ", the download has " + got + ". The file was discarded.");
+	}
 	if (signed_) {
 		// nothing leaves the .part names until the signature has been verified
 		try {
@@ -800,6 +818,7 @@ void cmd_show(context& ctx)
 		if (shown->size)
 			print_field("Size", itos(shown->size) + " bytes");
 		print_field("Filename", shown->filename);
+		print_field("SHA256", shown->checksum);
 		cout << "Status: " << (iv.empty() ? "not installed" : "installed (" + iv + ")") << endl;
 		if (!iv.empty())
 			cout << "Installed: " << (s.db.reason(name) == REASON_DEPENDENCY

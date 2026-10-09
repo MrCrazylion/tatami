@@ -190,6 +190,12 @@ Id resolver::add_solvable(Repo* repo, const pkgmeta& meta)
 		repo_set_str(repo, p, SOLVABLE_MEDIAFILE, meta.filename.c_str());
 	if (meta.size)
 		repo_set_num(repo, p, SOLVABLE_DOWNLOADSIZE, meta.size);
+	if (!meta.checksum.empty()) {
+		Repodata* data = repo_last_repodata(repo);
+		if (!data)
+			data = repo_add_repodata(repo, 0);
+		repodata_set_checksum(data, p, SOLVABLE_CHECKSUM, REPOKEY_TYPE_SHA256, meta.checksum.c_str());
+	}
 
 	ready_ = false;
 	return p;
@@ -317,6 +323,10 @@ vector<pkgmeta> resolver::available_meta() const
 				m.description = summary;
 			m.filename = solvable_file(p);
 			m.size = solvable_lookup_num(s, SOLVABLE_DOWNLOADSIZE, 0);
+			Id chktype = 0;
+			const char* chk = solvable_lookup_checksum(s, SOLVABLE_CHECKSUM, &chktype);
+			if (chk && chktype == REPOKEY_TYPE_SHA256)
+				m.checksum = chk;
 
 			// the relations, as the text they were written as ("a >= 1", "a | b");
 			// the implicit "provides itself" is not shown
@@ -691,6 +701,12 @@ vector<plan_step> resolver::plan() const
 			}
 
 			step.filename = solvable_file(p);
+			{
+				Id chktype = 0;
+				const char* chk = solvable_lookup_checksum(pool_id2solvable(pool_, p), SOLVABLE_CHECKSUM, &chktype);
+				if (chk && chktype == REPOKEY_TYPE_SHA256)
+					step.checksum = chk;
+			}
 
 			if (type == SOLVER_TRANSACTION_INSTALL ||
 			    type == SOLVER_TRANSACTION_OBSOLETES ||

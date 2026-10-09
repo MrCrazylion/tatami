@@ -1288,6 +1288,8 @@ sr() { "$TATAMI" -r "$SG/root" -c "$SG/ok.conf" "$@"; }
 check "update of a signed remote repository" 0 sr update
 grep -qx "https://mirror.test/core/repo.solv.sig" "$FLOG" && ok "the .sig of the index was fetched" || bad "no .sig fetched" "$(cat "$FLOG")"
 [ -f "$SG/root/var/lib/tatami/repos/core/repo.solv.sig" ] && ok "index and signature are cached together" || bad "no cached signature"
+OUT=$(sr show sg-app 2>&1)
+has "tatami index put the package's SHA-256 into repo.solv" "^SHA256: $(sha256sum "$SG/srv/core/$P" | cut -d' ' -f1)$"
 check "install from the signed repository" 0 sr -y install sg-app
 grep -qx "https://mirror.test/core/$P.sig" "$FLOG" && ok "the package signature was fetched" || bad "package .sig" "$(cat "$FLOG")"
 [ -z "$(ls "$SG/root/var/cache/tatami/packages/" 2>/dev/null)" ] && ok "package and .sig are deleted from the cache after the commit" || bad "cache not cleaned" "$(ls "$SG/root/var/cache/tatami/packages")"
@@ -1312,10 +1314,19 @@ cp "$SG/root/var/lib/tatami/repos/core/repo.solv" "$SG/good.solv"
 cp "$SG/srv/core/$P" "$SG/pkg.good"
 printf 'tampered' >> "$SG/srv/core/$P"
 rm -rf "$SG/root/var/cache"
+# 1. the package was swapped on the server but the (signed) index still promises the original
 OUT=$(sr -y install sg-app 2>&1); rc=$?
-[ $rc -ne 0 ] && echo "$OUT" | grep -q "SIGNATURE VERIFICATION FAILED" && ok "a tampered package is refused" || bad "tampered package accepted (exit $rc)" "$OUT"
-[ ! -e "$SG/root/usr/share/sg-app/f" ] && [ ! -e "$SG/root/var/cache/tatami/packages/$P" ] && ok "nothing installed, nothing left in the cache" || bad "tampered data survived" "$(ls "$SG/root/var/cache/tatami/packages")"
+[ $rc -ne 0 ] && echo "$OUT" | grep -q "CHECKSUM MISMATCH" && ok "a package that differs from the checksum in the index is refused" || bad "substituted package accepted (exit $rc)" "$OUT"
+[ ! -e "$SG/root/usr/share/sg-app/f" ] && [ -z "$(ls -A "$SG/root/var/cache/tatami/packages" 2>/dev/null)" ] && ok "nothing installed, the download (.part) was deleted" || bad "tampered data survived" "$(ls -A "$SG/root/var/cache/tatami/packages")"
+# 2. the index was re-signed to match, but the package's own .sig no longer fits
+"$TATAMI" index "$SG/srv/core" >/dev/null; "$TATAMI" sign "$SG/srv/core/repo.solv" "$SG/home/.tatami/privkey" >/dev/null
+check "the client takes the re-signed index" 0 sr update
+OUT=$(sr -y install sg-app 2>&1); rc=$?
+[ $rc -ne 0 ] && echo "$OUT" | grep -q "SIGNATURE VERIFICATION FAILED" && ok "a tampered package is refused by its signature" || bad "tampered package accepted (exit $rc)" "$OUT"
+[ ! -e "$SG/root/usr/share/sg-app/f" ] && [ -z "$(ls -A "$SG/root/var/cache/tatami/packages" 2>/dev/null)" ] && ok "nothing installed, nothing left in the cache" || bad "tampered data survived" "$(ls -A "$SG/root/var/cache/tatami/packages")"
 cp "$SG/pkg.good" "$SG/srv/core/$P"
+"$TATAMI" index "$SG/srv/core" >/dev/null; "$TATAMI" sign "$SG/srv/core/repo.solv" "$SG/home/.tatami/privkey" >/dev/null
+sr update >/dev/null 2>&1
 mv "$SG/srv/core/$P.sig" "$SG/pkg.sig"
 OUT=$(sr -y install sg-app 2>&1); rc=$?
 [ $rc -ne 0 ] && echo "$OUT" | grep -q "cannot get the signature" && ok "a missing .sig is refused" || bad "unsigned package accepted (exit $rc)" "$OUT"
@@ -1355,6 +1366,24 @@ echo "mine = $SG/unsigned" > "$SG/root/etc/tatami/repos.conf"
 "$TATAMI" -y -r "$SG/root" -c "$SG/nokey.conf" remove sg-app >/dev/null 2>&1
 check "neither does a plain path repository" 0 "$TATAMI" -y -r "$SG/root" -c "$SG/other.conf" install sg-app
 [ ! -s "$FLOG" ] && ok "no fetch for local repositories" || bad "fetched" "$(cat "$FLOG")"
+echo
+
+echo "# package checksums are for remote packages only: local files and file:// repositories skip them"
+LC="$T/chk"; rm -rf "$LC"; mkdir -p "$LC/repo" "$LC/other" "$LC/root/etc/tatami"
+mkp "$LC/repo" ck-app 1.0 - - usr/share/ck-app/f:original
+mkp "$LC/other" ck-app 1.0 - - usr/share/ck-app/f:substituted
+"$TATAMI" index "$LC/repo" >/dev/null
+CP="ck-app_1.0_${HARCH}.tar.gz"
+cp "$LC/other/$CP" "$LC/repo/$CP"       # same name and version, other content: the index's SHA-256 is now wrong
+printf 'BULKHEAD = no\nPUBKEY = none\n' > "$LC/c.conf"
+echo "mine = file://$LC/repo" > "$LC/root/etc/tatami/repos.conf"
+check "a file:// repository whose index has a wrong checksum still installs" 0 "$TATAMI" -y -r "$LC/root" -c "$LC/c.conf" install ck-app
+[ "$(cat "$LC/root/usr/share/ck-app/f")" = substituted ] && ok "the local file was used as it is, no hash check" || bad "unexpected content" "$(cat "$LC/root/usr/share/ck-app/f")"
+"$TATAMI" -y -r "$LC/root" -c "$LC/c.conf" remove ck-app >/dev/null 2>&1
+check "so does a package file given by path" 0 "$TATAMI" -y -r "$LC/root" -c "$LC/c.conf" install "$LC/repo/$CP"
+"$TATAMI" -y -r "$LC/root" -c "$LC/c.conf" remove ck-app >/dev/null 2>&1
+echo "mine = $LC/repo" > "$LC/root/etc/tatami/repos.conf"
+check "and a plain path repository" 0 "$TATAMI" -y -r "$LC/root" -c "$LC/c.conf" install ck-app
 echo
 
 echo "# remote repositories: local ones never use FETCHCMD"

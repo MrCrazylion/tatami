@@ -30,6 +30,7 @@ struct pkgmeta {
 	string replaces;
 	string filename;        // index only: absolute path of the package file
 	unsigned long long size;        // index only: size of the package file
+	string checksum;        // index only: SHA-256 of the package file, in hex (remote packages are checked against it)
 	string reason;          // installed packages only: REASON_EXPLICIT or REASON_DEPENDENCY
 
 	pkgmeta() : size(0) {}

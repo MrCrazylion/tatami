@@ -193,6 +193,29 @@ bool decode_pubkey(const string& text, unsigned char out[32])
 	return true;
 }
 
+string file_sha256(const string& file)
+{
+	init_sodium();
+	FILE* fp = fopen(file.c_str(), "rb");
+	if (!fp)
+		throw runtime_error_with_errno("could not open " + file);
+
+	crypto_hash_sha256_state st;
+	crypto_hash_sha256_init(&st);
+	u8 buf[65536];
+	size_t n;
+	while ((n = fread(buf, 1, sizeof buf, fp)) > 0)
+		crypto_hash_sha256_update(&st, buf, n);
+	const bool failed = ferror(fp);
+	fclose(fp);
+	if (failed)
+		throw runtime_error("could not read " + file);
+
+	u8 hash[crypto_hash_sha256_BYTES];
+	crypto_hash_sha256_final(&st, hash);
+	return hex_encode(hash, sizeof hash);
+}
+
 string sign_file(const string& file, const unsigned char seed[32])
 {
 	init_sodium();

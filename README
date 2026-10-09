@@ -329,8 +329,16 @@ machines set PUBKEY = <public key> in tatami.conf. Then, for remote repositories
     ignored with a warning); a cached package is only reused if its signature verifies.
   - without a PUBKEY a remote repository is refused. PUBKEY = none turns the check off.
 
+Package checksums: 'tatami index' (and so tatamk) stores the SHA-256 of every package
+file in repo.solv (libsolv's SOLVABLE_CHECKSUM; 'tatami show' prints it), so the signed
+index binds the packages it lists and a file swapped on the server is caught even
+without signatures. A package downloaded from a remote repository is hashed (libsodium)
+right after the download and must match; if not it is deleted and the run is
+refused. A cached copy must match as well, and an index that has no checksum for a
+remote package is refused.
+
 Local sources are trusted: a package file given on the command line, a file:// or
-plain path repository, are never checked and need no key. The signature covers a file
+plain path repository, are never checked (neither signature nor checksum) and need no key. The signature covers a file
 byte for byte; it does not hide anything, and a key you lose cannot be recovered.
 
 

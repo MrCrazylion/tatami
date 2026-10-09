@@ -24,6 +24,10 @@ struct signature_error : public runtime_error {
 
 string hex_encode(const unsigned char* data, size_t size);
 
+// SHA-256 of a file, in hex (libsodium), read in pieces. Used for the package
+// checksums of repo.solv.
+string file_sha256(const string& file);
+
 // Hex (64 digits) or base64 (32 bytes) to 32 bytes. False if it is neither.
 bool decode_pubkey(const string& text, unsigned char out[32]);
 

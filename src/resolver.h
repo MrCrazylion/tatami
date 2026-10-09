@@ -24,6 +24,7 @@ struct plan_step {
 	string version;
 	string old_version;     // UPGRADE: the installed version being replaced
 	string filename;        // INSTALL/UPGRADE: package file to extract
+	string checksum;        // INSTALL/UPGRADE: SHA-256 of the file from the index (hex), if it has one
 	string note;            // REMOVE: why ("no longer needed", "replaced by x", ...)
 };
 
