@@ -6,6 +6,7 @@
 #include "pkgarchive.h"
 #include "repos.h"
 #include "resolver.h"
+#include "sign.h"
 #include "rootfs.h"
 #include "txn.h"
 #include "util.h"
@@ -194,6 +195,36 @@ size_t index_dir(const context& ctx, const string& dir)
 	return entries.size();
 }
 
+//
+// Signatures. Only things that come over the network are checked: <file>.sig is
+// fetched next to every remote repo.solv and package and verified with the Ed25519
+// key PUBKEY of tatami.conf, before the file is used. Local paths and file://
+// repositories are trusted and are never checked. A remote repository without a
+// PUBKEY is refused, unless the configuration says PUBKEY = none.
+//
+
+bool signatures_wanted(const context& ctx)
+{
+	return ctx.cfg.pubkey != "none";
+}
+
+void require_pubkey(const context& ctx, const repo_spec& r)
+{
+	if (signatures_wanted(ctx) && !ctx.cfg.have_pubkey)
+		throw signature_error("repository " + r.name + " (" + r.url + ") is remote but PUBKEY is not set in tatami.conf: "
+				      "set PUBKEY = <public key> to verify its signatures, or PUBKEY = none to accept unsigned data");
+}
+
+// Fetches <url>.sig to <dest>; a failure means there is no usable signature
+void fetch_signature(const context& ctx, const string& url, const string& dest)
+{
+	try {
+		fetch_url(ctx.cfg.fetchcmd, url + ".sig", dest);
+	} catch (runtime_error& e) {
+		throw signature_error(string("cannot get the signature of ") + url + ": " + e.what());
+	}
+}
+
 // Adds every configured repository to the solver
 void load_repositories(const context& ctx, resolver& res)
 {
@@ -208,6 +239,18 @@ void load_repositories(const context& ctx, resolver& res)
 			if (!file_exists(solv)) {
 				cerr << "tatami: warning: repository " << r.name << " (" << r.url
 				     << ") has not been fetched yet, run 'tatami update'" << endl;
+				continue;
+			}
+			// the cached index is checked again: the key may have changed since 'update'
+			// An index that cannot be authenticated is left out, never used. (Not an error
+			// of the command: installing a local package file does not depend on it.)
+			try {
+				if (signatures_wanted(ctx)) {
+					require_pubkey(ctx, r);
+					verify_file(solv, solv + ".sig", ctx.cfg.pubkey_bytes);
+				}
+			} catch (signature_error& e) {
+				cerr << "tatami: warning: ignoring repository " << r.name << ": " << e.what() << endl;
 				continue;
 			}
 			res.add_repo_solv(r.url, solv);
@@ -249,19 +292,45 @@ string fetch_package(const context& ctx, const plan_step& st)
 	mkdir_p(dir);
 	const string cached = dir + "/" + file;
 
+	const bool signed_ = signatures_wanted(ctx);
+	if (signed_ && !ctx.cfg.have_pubkey)
+		throw signature_error("package " + url + " is remote but PUBKEY is not set in tatami.conf: "
+				      "set PUBKEY = <public key>, or PUBKEY = none to accept unsigned packages");
+
+	// a cached copy is only reused if its signature still verifies
 	if (file_exists(cached)) {
 		try {
+			if (signed_)
+				verify_file(cached, cached + ".sig", ctx.cfg.pubkey_bytes);
 			pkgmeta m = pkg_read_meta(cached);
 			if (m.name == st.name && m.version == st.version)
 				return cached;
 		} catch (runtime_error&) {
 		}
 		unlink(cached.c_str());
+		unlink((cached + ".sig").c_str());
 	}
 
 	cout << "Downloading " << file << "..." << endl;
 	const string part = cached + ".part";
 	fetch_url(ctx.cfg.fetchcmd, url, part, true);
+	if (signed_) {
+		// nothing leaves the .part names until the signature has been verified
+		try {
+			fetch_signature(ctx, url, part + ".sig");
+			verify_file(part, part + ".sig", ctx.cfg.pubkey_bytes);
+		} catch (runtime_error&) {
+			unlink(part.c_str());
+			unlink((part + ".sig").c_str());
+			throw;
+		}
+		if (rename((part + ".sig").c_str(), (cached + ".sig").c_str()) == -1) {
+			const int e = errno;
+			unlink(part.c_str());
+			unlink((part + ".sig").c_str());
+			throw runtime_error_with_errno("could not store " + cached + ".sig", e);
+		}
+	}
 	if (rename(part.c_str(), cached.c_str()) == -1) {
 		const int e = errno;
 		unlink(part.c_str());
@@ -517,7 +586,21 @@ void update_remote(const context& ctx, const repo_spec& r)
 	const string part = solv + ".part";
 
 	mkdir_p(r.dir);
+	require_pubkey(ctx, r);
 	fetch_url(ctx.cfg.fetchcmd, r.url + "/repo.solv", part, true);
+
+	// the signature comes first: an index that does not verify is never looked at
+	const bool check_sig = signatures_wanted(ctx);
+	if (check_sig) {
+		try {
+			fetch_signature(ctx, r.url + "/repo.solv", part + ".sig");
+			verify_file(part, part + ".sig", ctx.cfg.pubkey_bytes);
+		} catch (runtime_error&) {
+			unlink(part.c_str());
+			unlink((part + ".sig").c_str());
+			throw;
+		}
+	}
 
 	// whatever came back must be a real index (without -f curl saves error pages too)
 	try {
@@ -525,7 +608,15 @@ void update_remote(const context& ctx, const repo_spec& r)
 		check.add_repo_solv(r.url, part);
 	} catch (runtime_error& e) {
 		unlink(part.c_str());
+		unlink((part + ".sig").c_str());
 		throw runtime_error(r.url + "/repo.solv is not a valid index: " + e.what());
+	}
+	// the signature is stored first: an index without its signature is never trusted
+	if (check_sig && rename((part + ".sig").c_str(), (solv + ".sig").c_str()) == -1) {
+		const int e = errno;
+		unlink(part.c_str());
+		unlink((part + ".sig").c_str());
+		throw runtime_error_with_errno("could not write " + solv + ".sig", e);
 	}
 	if (rename(part.c_str(), solv.c_str()) == -1) {
 		const int e = errno;
@@ -555,6 +646,8 @@ void cmd_update(context& ctx)
 				const size_t n = index_dir(ctx, r.dir);
 				cout << "Indexed " << n << " package" << (n == 1 ? "" : "s") << " in " << r.dir << "/repo.solv" << endl;
 			}
+		} catch (signature_error&) {
+			throw;          // an unverifiable repository is not skipped: abort
 		} catch (runtime_error& e) {
 			cerr << "tatami: warning: " << r.name << ": " << e.what() << endl;
 		}

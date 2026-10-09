@@ -26,3 +26,7 @@
 	path = deps/bzip2
 	url = https://gitlab.com/bzip2/bzip2.git
 	ignore = untracked
+[submodule "deps/libsodium"]
+	path = deps/libsodium
+	url = https://github.com/jedisct1/libsodium.git
+	ignore = untracked

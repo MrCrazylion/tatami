@@ -1,4 +1,5 @@
 #include "config.h"
+#include "sign.h"
 #include "util.h"
 #include <fstream>
 #include <sstream>
@@ -15,6 +16,7 @@ config_t default_config()
 	config_t cfg;
 	cfg.pkg_ext = DEFAULT_PKG_EXT;
 	cfg.fetchcmd = DEFAULT_FETCHCMD;
+	cfg.have_pubkey = false;
 	// no repository listed: <root>/var/lib/tatami/packages (worked out per root)
 	return cfg;
 }
@@ -89,6 +91,16 @@ config_t read_config(const string& filename, bool required)
 				if (value.empty())
 					throw runtime_error(where + "FETCHCMD is empty");
 				cfg.fetchcmd = value;
+			} else if (key == "PUBKEY") {
+				if (value == "none") {
+					cfg.pubkey = value;
+					cfg.have_pubkey = false;
+				} else if (decode_pubkey(value, cfg.pubkey_bytes)) {
+					cfg.pubkey = value;
+					cfg.have_pubkey = true;
+				} else {
+					throw runtime_error(where + "invalid PUBKEY (expected 64 hex digits or a 32-byte base64 key, or none)");
+				}
 			} else if (key == "ARCH") {
 				cfg.arch = value;
 			} else if (key == "BULKHEAD") {

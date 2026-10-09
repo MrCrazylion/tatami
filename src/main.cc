@@ -5,6 +5,7 @@
 
 #include "bulkhead.h"
 #include "pack.h"
+#include "sign.h"
 #include "commands.h"
 #include "config.h"
 #include "rootfs.h"
@@ -34,6 +35,12 @@ static void print_help()
 	cout << "  ";
 	cout.width(24);
 	cout << left << "bulkhead <dir> -- <cmd>" << "run a command in a bwrap sandbox (used by tatamk)" << endl;
+	cout << "  ";
+	cout.width(24);
+	cout << left << "keygen [file]" << "make an Ed25519 key pair for signing packages (~/.tatami/privkey)" << endl;
+	cout << "  ";
+	cout.width(24);
+	cout << left << "sign <file> [key]" << "write <file>.sig, the Ed25519 signature of a file" << endl;
 	cout << "  ";
 	cout.width(24);
 	cout << left << "pack <meta> <dir> <out>" << "create a package archive (used by tatamk), -z <compression>" << endl;
@@ -66,6 +73,10 @@ int main(int argc, char** argv)
 		return bulkhead_main(argc, argv);
 	if (argc >= 2 && string(argv[1]) == "pack")
 		return pack_main(argc, argv);
+	if (argc >= 2 && string(argv[1]) == "keygen")
+		return keygen_main(argc, argv);
+	if (argc >= 2 && string(argv[1]) == "sign")
+		return sign_main(argc, argv);
 
 	try {
 		context ctx;

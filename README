@@ -30,16 +30,30 @@ $ make clean                        # keeps the built libraries
 $ make distclean                    # also removes the deps/*/cmake-build directories
 
 Pinned versions, all release tags: libarchive v3.8.9, zstd v1.5.7, zlib v1.3.2,
-libsolv 0.7.40 (see 'git submodule status'). To update one, check out the new
-tag inside its deps/ directory, remove its deps/<name>/cmake-build directory so it is
-rebuilt, and commit the new submodule revision.
-Each static archive is only built when it does not exist yet.
+xz v5.8.4, bzip2 1.0.8, lz4 v1.10.0, libsodium 1.0.22-RELEASE, libsolv 0.7.40 (see
+'git submodule status'). To update one, check out the new tag inside its deps/
+directory, remove its deps/<name>/cmake-build directory so it is rebuilt, and commit
+the new submodule revision. Each static archive is only built when it does not exist
+yet. libsodium is the one autotools project: it is configured from its shipped
+configure script (a POSIX shell and make are enough) in deps/libsodium/cmake-build,
+a directory named like the others so that clean-up is uniform.
 
-The vendored libarchive has gzip (zlib) and zstd built in and nothing else: no
-xz, bzip2, lz4, openssl, acl or xattr support, no libxml. Packages compressed with
-xz, bzip2 or lzip are still read, through the external xz/bzip2/lzip programs,
-which therefore have to be installed to use those formats; gz and zst need
-nothing.
+libarchive is built with zlib, zstd, liblzma, bzip2 and lz4, and without openssl, acl,
+xattr or libxml. Every compression format is read and written by tatami itself; no
+host program is needed for any of them.
+
+Build-time configuration: settings come from the make command line, a config.mk
+next to the Makefile (copy config.mk.example), the environment, then defaults.
+  PREFIX (/usr), BINDIR, MANDIR, DESTDIR   where 'make install' puts things
+  SYSCONFDIR (/etc)                        <root>/etc/tatami/{tatami.conf,repos.conf,hooks.d}
+  DB_DIR (/var/lib/tatami)                 database, journal, metadata, repos, default repository
+  CACHEDIR (/var/cache/tatami)             downloaded packages
+  PKG_EXT                                  a fixed package extension
+SYSCONFDIR, DB_DIR and CACHEDIR are compiled in (TATAMI_SYSCONFDIR, TATAMI_DB_DIR,
+TATAMI_CACHEDIR) and are always understood below --root, so
+'make SYSCONFDIR=/opt/etc' makes tatami read <root>/opt/etc/tatami/tatami.conf.
+tatamk gets SYSCONFDIR too. 'make clean' removes objects and binaries and keeps the
+vendored libraries; 'make distclean' removes those as well. config.mk is never touched.
 
 
 Command line
@@ -276,6 +290,32 @@ progress bar from the percentages that curl -# prints and hides the raw output
 If the command fails, its last message is shown in the error. A local path or
 file:// repository never starts FETCHCMD. Publish a remote repository by putting
 the packages and the repo.solv of 'tatami index' on a web server.
+
+
+Signing packages
+----------------
+Ed25519 (RFC 8032, pre-hash variant) through libsodium (deps/libsodium, linked statically; no OpenSSL). tatami has two small commands for it:
+
+$ tatami keygen                     private key ~/.tatami/privkey (0600), public key
+                                    ~/.tatami/privkey.pub, prints the PUBKEY line
+$ tatami sign <file> [keyfile]      writes <file>.sig
+
+tatamk signs as part of the build: if $TATAMI_PRIVKEY or ~/.tatami/privkey exists, it
+refreshes the repo.solv of the output directory and signs both the package and the
+repo.solv (--no-sign skips it; without a key it builds unsigned, as before). Publish
+the packages together with their .sig files and repo.solv(.sig). On the installing
+machines set PUBKEY = <public key> in tatami.conf. Then, for remote repositories only:
+
+  - 'tatami update' fetches repo.solv and repo.solv.sig and verifies them before
+    anything is stored; 'tatami install' does the same for each package, before it
+    is stored in the cache or installed. A bad, wrong-key or missing signature aborts.
+  - cached indexes are verified again each time they are loaded (one that fails is
+    ignored with a warning); a cached package is only reused if its signature verifies.
+  - without a PUBKEY a remote repository is refused. PUBKEY = none turns the check off.
+
+Local sources are trusted: a package file given on the command line, a file:// or
+plain path repository, are never checked and need no key. The signature covers a file
+byte for byte; it does not hide anything, and a key you lose cannot be recovered.
 
 
 Target root (--root)

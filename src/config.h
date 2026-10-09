@@ -40,6 +40,9 @@ struct config_t {
 	string pkg_ext;                 // without leading dot, empty: tar.<compression>
 	vector<string> repo_dirs;       // directories scanned by 'tatami update'
 	string fetchcmd;                // downloads remote repositories (FETCHCMD)
+	string pubkey;                  // PUBKEY: Ed25519 public key (hex or base64), or "none"
+	bool have_pubkey;               // pubkey_bytes is valid
+	unsigned char pubkey_bytes[32];
 	string arch;                    // empty: use the machine architecture
 	string bulkhead;                // tatamk only: "yes" or "no" (build isolation)
 	string compression;             // used by tatamk only: gz, xz, zst, bz2 or none

@@ -99,11 +99,17 @@ LZ4_DIR    = $(DEPS_DIR)/lz4
 LZ4_BUILD  = $(LZ4_DIR)/cmake-build
 LZ4_A      = $(LZ4_BUILD)/liblz4.a
 
+# libsodium (Ed25519 signatures). It uses autotools, built outside its source tree;
+# the directory has the same name as the others so that clean-up is uniform.
+SODIUM_DIR   = $(DEPS_DIR)/libsodium
+SODIUM_BUILD = $(SODIUM_DIR)/cmake-build
+SODIUM_A     = $(SODIUM_BUILD)/src/libsodium/.libs/libsodium.a
+
 LIBARCHIVE_DIR   = $(DEPS_DIR)/libarchive
 LIBARCHIVE_BUILD = $(LIBARCHIVE_DIR)/cmake-build
 LIBARCHIVE_A     = $(LIBARCHIVE_BUILD)/libarchive/libarchive.a
 
-DEP_ARCHIVES = $(LIBSOLV_A) $(LIBARCHIVE_A) $(XZ_A) $(BZIP2_A) $(LZ4_A) $(ZSTD_A) $(ZLIB_A)
+DEP_ARCHIVES = $(LIBSOLV_A) $(LIBARCHIVE_A) $(XZ_A) $(BZIP2_A) $(LZ4_A) $(SODIUM_A) $(ZSTD_A) $(ZLIB_A)
 
 CXXFLAGS ?= -O2
 CXXFLAGS += -std=c++11 -Wall -Wextra -pedantic -D_GNU_SOURCE -DVERSION=\"$(VERSION)\" \
@@ -113,7 +119,8 @@ CXXFLAGS += -std=c++11 -Wall -Wextra -pedantic -D_GNU_SOURCE -DVERSION=\"$(VERSI
 	    -isystem $(LIBSOLV_INC) \
 	    -isystem $(LIBARCHIVE_DIR)/libarchive \
 	    -isystem $(ZSTD_DIR)/lib -isystem $(ZLIB_DIR) -isystem $(ZLIB_BUILD) \
-	    -isystem $(XZ_DIR)/src/liblzma/api -isystem $(BZIP2_DIR) -isystem $(LZ4_DIR)/lib
+	    -isystem $(XZ_DIR)/src/liblzma/api -isystem $(BZIP2_DIR) -isystem $(LZ4_DIR)/lib \
+	    -isystem $(SODIUM_DIR)/src/libsodium/include -isystem $(SODIUM_DIR)/src/libsodium/include/sodium -isystem $(SODIUM_BUILD)/src/libsodium/include
 
 # The vendored archives are linked by path (libarchive needs the compression
 # libraries, so they come after it); nothing is taken from the system or from pkg-config.
@@ -124,7 +131,7 @@ ifeq ($(STATIC),yes)
 LDFLAGS += -static
 endif
 
-SRCS = main.cc bulkhead.cc commands.cc engine.cc resolver.cc db.cc txn.cc rootfs.cc hooks.cc pack.cc pkgarchive.cc meta.cc config.cc repos.cc util.cc
+SRCS = main.cc bulkhead.cc commands.cc engine.cc resolver.cc db.cc txn.cc rootfs.cc hooks.cc pack.cc pkgarchive.cc meta.cc config.cc repos.cc sign.cc util.cc
 OBJECTS = $(SRCS:%.cc=src/%.o)
 
 all: tatami tatamk
@@ -215,6 +222,16 @@ $(BZIP2_BUILD)/%.o: $(BZIP2_DIR)/%.c
 $(BZIP2_A): $(BZIP2_OBJS)
 	$(AR) rcs $@ $(BZIP2_OBJS)
 
+# libsodium -> libsodium.a (--enable-minimal: just the high-level API, which has Ed25519)
+$(SODIUM_BUILD)/Makefile:
+	$(call check_submodule,$(SODIUM_DIR),configure)
+	mkdir -p $(SODIUM_BUILD)
+	cd $(SODIUM_BUILD) && $(SODIUM_DIR)/configure --enable-static --disable-shared \
+		--enable-minimal --disable-dependency-tracking --disable-debug --with-pic
+
+$(SODIUM_A): $(SODIUM_BUILD)/Makefile
+	$(MAKE) -C $(SODIUM_BUILD)
+
 # lz4 -> liblz4.a (library only)
 $(LZ4_BUILD)/Makefile:
 	$(call check_submodule,$(LZ4_DIR)/build/cmake)
@@ -257,7 +274,7 @@ tatamk: tatamk.in .flags
 	chmod +x $@
 
 # libsolv's headers must be staged before anything is compiled (order-only)
-src/%.o: src/%.cc .flags | $(LIBSOLV_STAMP)
+src/%.o: src/%.cc .flags | $(LIBSOLV_STAMP) $(SODIUM_BUILD)/Makefile
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 -include $(OBJECTS:.o=.d)
@@ -297,5 +314,4 @@ clean:
 	rm -f src/*.o src/*.d tatami tatamk .flags
 
 distclean: clean
-	rm -f tatami tatamk .flags
-	rm -rf $(LIBSOLV_BUILD) $(ZLIB_BUILD) $(ZSTD_BUILD) $(XZ_BUILD) $(BZIP2_BUILD) $(LZ4_BUILD) $(LIBARCHIVE_BUILD)
+	rm -rf $(LIBSOLV_BUILD) $(ZLIB_BUILD) $(ZSTD_BUILD) $(XZ_BUILD) $(BZIP2_BUILD) $(LZ4_BUILD) $(LIBARCHIVE_BUILD) $(SODIUM_BUILD)

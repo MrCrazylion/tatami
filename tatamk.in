@@ -46,11 +46,15 @@ print_help() {
 	echo "      --no-bulkhead     build on the host, without the bwrap sandbox"
 	echo "                        (alias --no-sandbox; or BULKHEAD=no in tatami.conf)"
 	echo "      --bulkhead        force the sandbox even if tatami.conf disables it"
+	echo "      --no-sign         do not sign the package even if a signing key exists"
 	echo "  -v, --version         print version and exit"
 	echo "packages are named <name>_<version>-<release>_<arch>.<extension>; the extension is"
 	echo "tar.<compression> unless PKG_EXT is set (default '@DEFAULT_PKG_EXT@', then the configuration"
 	echo "file, then the PKG_EXT environment variable)"
 	echo "  -h, --help            print help and exit"
+	echo "signing: if \$TATAMI_PRIVKEY or ~/.tatami/privkey exists (see 'tatami keygen'), the"
+	echo "package is signed (<package>.sig) and the output directory's repo.solv is updated"
+	echo "and signed (repo.solv.sig) as part of the build"
 }
 
 conf_get() {
@@ -75,6 +79,7 @@ OUTDIR="$PWD"
 KEEP_WORK="no"
 COMPRESSION_OPT=""
 BULKHEAD_OPT=""
+SIGN="yes"
 TATAMI="${TATAMI:-tatami}"     # the tatami binary providing 'bulkhead'
 
 while [ $# -gt 0 ]; do
@@ -86,6 +91,7 @@ while [ $# -gt 0 ]; do
 	-k|--keep-work) KEEP_WORK="yes" ;;
 	--no-bulkhead|--no-sandbox) BULKHEAD_OPT="no" ;;
 	--bulkhead) BULKHEAD_OPT="yes" ;;
+	--no-sign) SIGN="no" ;;
 	-v|--version) echo "tatamk #VERSION#"; exit 0 ;;
 	-h|--help) print_help; exit 0 ;;
 	*) die "invalid option $1" ;;
@@ -274,5 +280,26 @@ rm -f "$PKG/.META"
 	die "could not create package"
 }
 mv "$OUTDIR/$PKGFILE.part" "$OUTDIR/$PKGFILE" || die "could not create package"
+
+# Signing is part of the build: the signing key is $TATAMI_PRIVKEY if set (it must
+# exist then), otherwise ~/.tatami/privkey if there is one. With a key the
+# repository index of the output directory is refreshed too, and both are signed.
+PRIVKEY=""
+if [ "$SIGN" = yes ]; then
+	if [ -n "${TATAMI_PRIVKEY-}" ]; then
+		[ -r "$TATAMI_PRIVKEY" ] || die "signing key $TATAMI_PRIVKEY (TATAMI_PRIVKEY) not found"
+		PRIVKEY="$TATAMI_PRIVKEY"
+	elif [ -n "${HOME-}" ] && [ -r "$HOME/.tatami/privkey" ]; then
+		PRIVKEY="$HOME/.tatami/privkey"
+	fi
+fi
+if [ -n "$PRIVKEY" ]; then
+	info "Signing with $PRIVKEY"
+	"$TATAMI" index "$OUTDIR" >/dev/null || die "could not update $OUTDIR/repo.solv"
+	"$TATAMI" sign "$OUTDIR/$PKGFILE" "$PRIVKEY" >/dev/null || die "could not sign $PKGFILE"
+	"$TATAMI" sign "$OUTDIR/repo.solv" "$PRIVKEY" >/dev/null || die "could not sign repo.solv"
+else
+	info "Not signing (no key: run 'tatami keygen')"
+fi
 
 info "Built $OUTDIR/$PKGFILE"
