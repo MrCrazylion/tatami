@@ -66,7 +66,7 @@ config_t read_config(const string& filename, bool required)
 		const string::size_type eq = line.find('=');
 		const string key = eq == string::npos ? string() : trim(line.substr(0, eq));
 		const bool is_setting = !key.empty() &&
-			key.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") == string::npos;
+			key.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_") == string::npos;
 
 		if (is_setting) {
 			const string value = unquote(trim(line.substr(eq + 1)));
@@ -87,6 +87,10 @@ config_t read_config(const string& filename, bool required)
 						cfg.repo_dirs.insert(cfg.repo_dirs.end(), dirs.begin(), dirs.end());
 					}
 				}
+			} else if (key == "HoldPkg" || key == "HOLDPKG") {
+				// space-separated package names; may be given several times
+				vector<string> names = split(value, " \t");
+				cfg.hold_pkgs.insert(cfg.hold_pkgs.end(), names.begin(), names.end());
 			} else if (key == "FETCHCMD") {
 				if (value.empty())
 					throw runtime_error(where + "FETCHCMD is empty");

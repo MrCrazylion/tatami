@@ -1423,6 +1423,47 @@ check "neither does a plain path repository" 0 "$TATAMI" -y -r "$SG/root" -c "$S
 [ ! -s "$FLOG" ] && ok "no fetch for local repositories" || bad "fetched" "$(cat "$FLOG")"
 echo
 
+echo "# HoldPkg: held packages are not upgraded, the others are"
+HP="$T/hold"; rm -rf "$HP"; mkdir -p "$HP/srv/core" "$HP/root/etc/tatami"
+SRVDIR="$HP/srv"; FLOG="$HP/fetch.log"; export SRVDIR FLOG; : > "$FLOG"
+echo "core = https://mirror.test/core" > "$HP/root/etc/tatami/repos.conf"
+printf 'PUBKEY = none\nBULKHEAD = no\nFETCHCMD = sh -c '"'"'cp "$SRVDIR/${0#https://mirror.test/}" "$1"'"'"' %%URL%% %%DEST%%\n' > "$HP/plain.conf"
+{ cat "$HP/plain.conf"; echo "HoldPkg = hp-held"; } > "$HP/hold.conf"
+hr() { "$TATAMI" -r "$HP/root" -c "$1" "${@:2}"; }
+mkp "$HP/srv/core" hp-held 1.0 - - usr/share/hp-held/f:one
+mkp "$HP/srv/core" hp-free 1.0 - - usr/share/hp-free/f:one
+mkp "$HP/srv/core" hp-dep 1.0 - - usr/share/hp-dep/f:one
+"$TATAMI" index "$HP/srv/core" >/dev/null
+check "update" 0 hr "$HP/plain.conf" update
+check "install the three packages" 0 hr "$HP/plain.conf" -y install hp-held hp-free hp-dep
+mkp "$HP/srv/core" hp-held 2.0 - - usr/share/hp-held/f:two
+mkp "$HP/srv/core" hp-free 2.0 - - usr/share/hp-free/f:two
+"$TATAMI" index "$HP/srv/core" >/dev/null
+check "update fetches the new index" 0 hr "$HP/plain.conf" update
+OUT=$(hr "$HP/hold.conf" -y upgrade 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "the upgrade with HoldPkg works" || bad "upgrade failed ($rc)" "$OUT"
+has "the held package is reported" "Skipping upgrade for held package: hp-held \(1.0 -> 2.0\)"
+[ "$(cat "$HP/root/usr/share/hp-held/f")" = one ] && ok "hp-held stays at version 1.0" || bad "held package changed" "$(cat "$HP/root/usr/share/hp-held/f")"
+[ "$(cat "$HP/root/usr/share/hp-free/f")" = two ] && ok "hp-free, not held, was upgraded to 2.0" || bad "free package not upgraded"
+hr "$HP/hold.conf" list 2>&1 | grep -q "^hp-held/1.0" && ok "the database still has hp-held 1.0" || bad "database"
+OUT=$(hr "$HP/hold.conf" -y upgrade 2>&1)
+has "a second upgrade has nothing to do" "Nothing to do"
+has "and still says why" "Skipping upgrade for held package: hp-held"
+# an explicit request wins over the hold
+check "naming the held package in install upgrades it" 0 hr "$HP/hold.conf" -y install hp-held
+[ "$(cat "$HP/root/usr/share/hp-held/f")" = two ] && ok "explicitly requested: upgraded despite HoldPkg" || bad "explicit install blocked"
+# several names, several lines, a package that is not installed
+mkp "$HP/srv/core" hp-held 3.0 - - usr/share/hp-held/f:three
+mkp "$HP/srv/core" hp-free 3.0 - - usr/share/hp-free/f:three
+"$TATAMI" index "$HP/srv/core" >/dev/null; hr "$HP/plain.conf" update >/dev/null
+{ cat "$HP/plain.conf"; echo "HoldPkg = hp-dep not-installed-anywhere"; echo "HoldPkg = hp-held"; } > "$HP/hold2.conf"
+check "HoldPkg with several names on several lines" 0 hr "$HP/hold2.conf" -y upgrade
+[ "$(cat "$HP/root/usr/share/hp-held/f")" = two ] && [ "$(cat "$HP/root/usr/share/hp-free/f")" = three ] && ok "hp-held held (two), hp-free upgraded (three)" || bad "multi-line hold" "$(cat "$HP/root/usr/share/hp-held/f") $(cat "$HP/root/usr/share/hp-free/f")"
+# without HoldPkg everything is upgraded
+check "no HoldPkg: the same upgrade takes everything" 0 hr "$HP/plain.conf" -y upgrade
+[ "$(cat "$HP/root/usr/share/hp-held/f")" = three ] && ok "hp-held upgraded once it is no longer held" || bad "still held"
+echo
+
 echo "# package checksums are for remote packages only: local files and file:// repositories skip them"
 LC="$T/chk"; rm -rf "$LC"; mkdir -p "$LC/repo" "$LC/other" "$LC/root/etc/tatami"
 mkp "$LC/repo" ck-app 1.0 - - usr/share/ck-app/f:original

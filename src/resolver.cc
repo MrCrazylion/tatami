@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "resolver.h"
 #include "util.h"
 #include <cstring>
@@ -483,9 +484,50 @@ void resolver::want_upgrade_all()
 // The job queue handed to the solver. When removing, every installed package
 // the user asked for is declared SOLVER_USERINSTALLED: it is the input libsolv
 // needs to tell which dependencies became unneeded (SOLVER_CLEANDEPS).
+Id resolver::installed_id(const string& name) const
+{
+	Id nameid = pool_str2id(pool_, name.c_str(), 0);
+	if (!nameid)
+		return 0;
+	Id p;
+	Solvable* s;
+	FOR_REPO_SOLVABLES(installed_, p, s)
+		if (s->name == nameid)
+			return p;
+	return 0;
+}
+
+// A held package the command does not name itself
+bool resolver::is_held(const string& name) const
+{
+	return find(held_.begin(), held_.end(), name) != held_.end() &&
+	       requested_.count(name) == 0 && erase_targets_.count(name) == 0;
+}
+
+vector<string> resolver::held_back() const
+{
+	vector<string> result;
+	for (size_t i = 0; i < held_.size(); i++) {
+		const Id p = installed_id(held_[i]);
+		if (!p || !is_held(held_[i]))
+			continue;
+		const string have = pool_id2str(pool_, pool_id2solvable(pool_, p)->evr);
+		const string best = best_available(held_[i]);
+		if (!best.empty() && newer(best, have))
+			result.push_back(held_[i] + " (" + have + " -> " + best + ")");
+	}
+	return result;
+}
+
 void resolver::make_jobs(Queue* jobs) const
 {
 	queue_init_clone(jobs, &job_);
+	// HoldPkg: libsolv must leave these installed packages exactly as they are
+	for (size_t i = 0; i < held_.size(); i++) {
+		const Id p = installed_id(held_[i]);
+		if (p && is_held(held_[i]))
+			queue_push2(jobs, SOLVER_SOLVABLE | SOLVER_LOCK, p);
+	}
 	if (erasing_)
 		for (size_t i = 0; i < explicit_ids_.size(); i++)
 			queue_push2(jobs, SOLVER_SOLVABLE | SOLVER_USERINSTALLED, explicit_ids_[i]);

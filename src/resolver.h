@@ -60,6 +60,12 @@ public:
 	// for any other reason are dependencies.
 	const set<string>& requested_names() const { return requested_; }
 
+	// Installed packages that must stay as they are (HoldPkg): each gets a SOLVER_LOCK
+	// job, except those the user names in the very command (an explicit request wins)
+	void set_held(const vector<string>& names) { held_ = names; }
+	// Held packages that are installed and have a newer version available: "name (1.0 -> 2.0)"
+	vector<string> held_back() const;
+
 	// Job construction. Names may be 'name', 'name=version' or a provided name.
 	void want_install(const string& spec);
 	void want_install_solvable(Id p);
@@ -97,6 +103,8 @@ private:
 	void collect_problems(Solver* solv, vector<string>& out) const;
 	string downgrade_hint();
 	Id best_available_id(const string& name) const;
+	Id installed_id(const string& name) const;
+	bool is_held(const string& name) const;
 	Id parse_dep(const string& text);
 	Id parse_one_dep(const string& text);
 
@@ -114,6 +122,7 @@ private:
 	bool erasing_;
 	set<string> requested_;                 // see requested_names()
 	set<string> erase_targets_;
+	vector<string> held_;                   // see set_held()
 	map<string, bool> dependency_;          // installed package -> installed as a dependency
 	vector<Id> explicit_ids_;               // installed packages the user asked for
 };

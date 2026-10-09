@@ -315,6 +315,16 @@ file:// repository never starts FETCHCMD. Publish a remote repository by putting
 the packages and the repo.solv of 'tatami index' on a web server.
 
 
+Holding packages
+----------------
+HoldPkg = name1 name2 in tatami.conf (space-separated, may be repeated) pins installed
+packages: each gets a SOLVER_LOCK job, so libsolv leaves them exactly as they are
+whatever else is upgraded or removed ('tatami upgrade' reports each one that has a newer
+version as "Skipping upgrade for held package: name (1.0 -> 2.0)"). A package named in
+the install or remove command itself is not held for that command: an explicit
+request wins. Held packages that are not installed are ignored.
+
+
 Signing packages
 ----------------
 Ed25519 (RFC 8032, pre-hash variant) through libsodium (deps/libsodium, linked statically; no OpenSSL). tatami has two small commands for it:

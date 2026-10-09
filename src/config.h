@@ -39,6 +39,7 @@ struct rule_t {
 struct config_t {
 	string pkg_ext;                 // without leading dot, empty: tar.<compression>
 	vector<string> repo_dirs;       // directories scanned by 'tatami update'
+	vector<string> hold_pkgs;       // HoldPkg: installed packages that are never upgraded or removed by a transaction
 	string fetchcmd;                // downloads remote repositories (FETCHCMD)
 	string pubkey;                  // PUBKEY: Ed25519 public key (hex or base64), or "none"
 	bool have_pubkey;               // pubkey_bytes is valid

@@ -375,6 +375,7 @@ struct session {
 			txn::recover(db.root(), cerr);
 		db.open(exclusive);
 		res.reset(new resolver(ctx.arch));
+		res->set_held(ctx.cfg.hold_pkgs);
 		res->add_installed(db.packages(), db);
 		if (need_index) {
 			load_repositories(ctx, *res);
@@ -414,6 +415,13 @@ void run_transaction(const context& ctx, session& s, const char* verb,
 		for (size_t i = 0; i < problems.size(); i++)
 			cerr << "  - " << problems[i] << endl;
 		throw runtime_error("unmet dependencies");
+	}
+
+	// HoldPkg: tell what an upgrade leaves alone
+	if (string(verb) == "upgrade") {
+		const vector<string> held = s.res->held_back();
+		for (size_t i = 0; i < held.size(); i++)
+			cout << "Skipping upgrade for held package: " << held[i] << endl;
 	}
 
 	vector<plan_step> plan = s.res->plan();
