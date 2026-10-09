@@ -15,7 +15,7 @@ using namespace std;
 
 // Applies single package operations to the installed system. This is the
 // pkgadd/pkgrm logic of pkgutils: INSTALL/UPGRADE rules, conflict handling,
-// rejected files and the database commit protocol.
+// the .old copies of replaced configuration files and the transaction commit.
 class engine {
 public:
 	engine(const config_t& cfg, database& db, bool force);
@@ -75,7 +75,7 @@ private:
 		shared_ptr<regex_t> re;
 	};
 
-	set<string> make_keep_list(const set<string>& files) const;
+	set<string> make_config_list(const set<string>& files) const;
 	set<string> apply_install_rules(set<string>& files) const;
 	bool rule_applies(const compiled_rule& rule, const string& file) const;
 

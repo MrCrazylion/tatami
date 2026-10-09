@@ -52,7 +52,6 @@ bool file_exists(const string& filename);
 bool file_empty(const string& filename);
 bool file_equal(const string& file1, const string& file2);
 bool permissions_equal(const string& file1, const string& file2);
-void file_remove(const string& basedir, const string& filename);
 void mkdir_p(const string& path, mode_t mode = 0755);
 string real_path(const string& path);
 

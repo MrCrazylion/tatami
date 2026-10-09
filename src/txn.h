@@ -17,6 +17,8 @@ using namespace std;
 //   - an existing file that is about to be overwritten is renamed aside (in
 //     its own directory, so on the same filesystem) and renamed back on
 //     rollback;
+//   - an existing configuration file that the package replaces is renamed to
+//     <file>.old (and stays after the commit; a rollback renames it back);
 //   - an existing directory whose mode/owner the extraction changes gets them
 //     restored.
 // Files that are no longer wanted (removed packages, files an upgrade dropped)
@@ -30,7 +32,7 @@ using namespace std;
 //   T                    start of a run
 //   I name version       a package is installed or upgraded
 //   R name               a package is removed
-//   C/B/M/D ...          the file actions described above
+//   C/B/O/M/D ...        the file actions described above
 //   K                    all work is done, the database commit follows
 // Without a K the database cannot have been committed: the run is rolled back.
 // With a K the database decides: if it lists the result of every I and R the
@@ -56,6 +58,10 @@ public:
 	void created(const string& path);
 	// Moves an existing file out of the way and returns where it went
 	string backup(const string& path);
+	// Renames the existing file 'path' to path + ".old", which is kept after the commit
+	// (the new version of a configuration file is about to take its place). A rollback
+	// puts it back. Returns the name of the saved file.
+	string save_old(const string& path);
 	void dir_meta(const string& path, const struct stat& st);
 	// Path to delete once the transaction is committed
 	void defer_delete(const string& path);
@@ -73,7 +79,7 @@ public:
 
 private:
 	struct record {
-		char type;              // 'C' created, 'B' backup, 'M' dir meta, 'D' deferred delete
+		char type;              // 'C' created, 'B' backup, 'O' kept .old file, 'M' dir meta, 'D' deferred delete
 		string path;
 		string bak;
 		mode_t mode;

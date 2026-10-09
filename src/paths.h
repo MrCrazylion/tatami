@@ -23,7 +23,6 @@
 #define DB_DIR          STATE_DIR
 #define PKG_DB          STATE_DIR "/db"
 #define PKG_META_DIR    STATE_DIR "/meta"                // per-package metadata, install reason
-#define PKG_REJECTED    STATE_DIR "/rejected"            // kept-away new versions of config files
 #define JOURNAL_FILE    STATE_DIR "/transaction.journal"
 #define DEFAULT_REPO_REL STATE_DIR "/packages"           // repository used when none is configured
 

@@ -22,8 +22,10 @@ package_t pkg_open(const string& filename);
 pkgmeta pkg_read_meta(const string& filename);
 
 // Extracts the package below 'root' (which must be absolute and end in '/').
-// Files in keep_list that already exist go to the rejected directory instead,
-// files in non_install_list are skipped.
+// A file in config_list (the UPGRADE rules saying NO: configuration files) that
+// already exists and differs from the package's version is renamed to <file>.old
+// and the package's version is installed; an identical one is left alone. Files in
+// non_install_list are skipped.
 //
 // Everything that is created or overwritten is recorded in 'tx' first. The
 // first error of any kind (a file that cannot be written, a corrupt or

@@ -231,7 +231,7 @@ static void prepare_target(txn& tx, const string& absroot, const string& entry_p
 }
 
 void pkg_install(const string& utilname, const string& root, const string& filename,
-		 const set<string>& keep_list, const set<string>& non_install_list,
+		 const set<string>& config_list, const set<string>& non_install_list,
 		 txn& tx)
 {
 	archive_ptr ar = open_archive(filename);
@@ -273,14 +273,18 @@ void pkg_install(const string& utilname, const string& root, const string& filen
 			continue;
 		}
 
-		// Check if file should be rejected
-		const string reject_dir = root_resolve(absroot, PKG_REJECTED);
-		if (file_exists(real_filename) && keep_list.find(archive_filename) != keep_list.end())
-			real_filename = root_resolve(absroot, string(PKG_REJECTED) + "/" + archive_filename);
+		// A configuration file (UPGRADE rule saying NO) that exists already and is a
+		// regular file: the new version is extracted next to it first. If it is
+		// identical it is dropped; otherwise the existing file becomes <file>.old
+		// and the new one takes its place.
+		struct stat est;
+		const bool config_file = S_ISREG(mode) && config_list.find(archive_filename) != config_list.end() &&
+					 lstat(original_filename.c_str(), &est) == 0 && S_ISREG(est.st_mode);
+		const string extract_to = config_file ? original_filename + ".tatami-new." + itos(getpid()) : original_filename;
 
-		prepare_target(tx, absroot, real_filename, mode);
+		prepare_target(tx, absroot, extract_to, mode);
 
-		archive_entry_set_pathname(entry, real_filename.c_str());
+		archive_entry_set_pathname(entry, extract_to.c_str());
 
 		// Hard link targets are paths inside the root too
 		const char* hardlink = archive_entry_hardlink(entry);
@@ -296,21 +300,25 @@ void pkg_install(const string& utilname, const string& root, const string& filen
 			throw runtime_error("could not install " + archive_filename + ": " + (msg ? msg : "unknown error"));
 		}
 
-		// Check rejected file
-		if (real_filename != original_filename) {
-			bool remove_file = false;
+		if (config_file) {
+			if (permissions_equal(extract_to, original_filename) &&
+			    (file_empty(extract_to) ? file_empty(original_filename) : file_equal(extract_to, original_filename))) {
+				// nothing changed: the existing file stays as it is
+				unlink(extract_to.c_str());
+				continue;
+			}
 
-			if (S_ISDIR(mode))
-				remove_file = permissions_equal(real_filename, original_filename);
-			else
-				remove_file = permissions_equal(real_filename, original_filename) &&
-					(file_empty(real_filename) || file_equal(real_filename, original_filename));
-
-			// Remove rejected file or signal about its existence
-			if (remove_file)
-				file_remove(reject_dir, real_filename);
-			else
-				cout << utilname << ": rejecting " << archive_filename << ", keeping existing version" << endl;
+			// The previous .old file, if any, is replaced; a rollback brings it back
+			const string old = original_filename + ".old";
+			struct stat ost;
+			if (lstat(old.c_str(), &ost) == 0)
+				tx.backup(old);
+			tx.save_old(original_filename);
+			tx.created(original_filename);
+			if (rename(extract_to.c_str(), original_filename.c_str()) == -1)
+				throw runtime_error_with_errno("could not install " + archive_filename);
+			cout << utilname << ": " << archive_filename << " differs from the existing file, "
+			     << "which was saved as " << archive_filename << ".old" << endl;
 		}
 	}
 

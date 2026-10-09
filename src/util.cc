@@ -213,17 +213,6 @@ bool permissions_equal(const string& file1, const string& file2)
 		(buf1.st_gid == buf2.st_gid);
 }
 
-void file_remove(const string& basedir, const string& filename)
-{
-	if (filename != basedir && !remove(filename.c_str())) {
-		char* path = strdup(filename.c_str());
-		if (!path)
-			return;
-		file_remove(basedir, dirname(path));
-		free(path);
-	}
-}
-
 void mkdir_p(const string& path, mode_t mode)
 {
 	string::size_type pos = 0;

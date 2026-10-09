@@ -5,7 +5,7 @@ Description
 -----------
 tatami keeps the architecture of pkgutils (CRUX): a small C++ core on top of
 libarchive, a plain-text package database with a crash-safe commit, regex
-UPGRADE/INSTALL rules and "rejected" files for locally modified configuration,
+UPGRADE/INSTALL rules and .old copies of replaced configuration files,
 and a bash tool (tatamk) that builds packages from recipes. On top of that it
 has an apt-style command line and uses libsolv to resolve dependencies.
 
@@ -124,6 +124,13 @@ conflict, ...) stops the run, deletes what was created (bottom-up), restores wha
 was overwritten, and leaves the database untouched: the packages that had already
 been extracted are undone too. A file that a new package takes over from a package
 being removed in the same run is kept, with the new content.
+
+Configuration files (the files an UPGRADE rule in tatami.conf says NO to, by default
+under etc/) are handled Slackware-style: when an upgrade brings a version that differs
+from the file on disk, the new one is installed and the existing one is renamed to
+<file>.old (an identical file is left alone, an earlier .old is replaced). The rename is
+journalled like every other change ("O"): a rollback, or the recovery of a killed run,
+deletes the new file and renames the .old back; after a commit the .old stays.
 
 The record is also kept in var/lib/tatami/transaction.journal ("T" starts a run,
 "I"/"R" note the packages, "K" is written right before the database commit). If
@@ -348,7 +355,7 @@ Every command takes -r <root> (default /). Everything tatami reads or writes
 belongs to that root and nothing outside it is touched:
 
   <root>/var/lib/tatami/db                  the package database
-  <root>/var/lib/tatami/                   journal, install reasons, rejected files
+  <root>/var/lib/tatami/                   journal, install reasons
   <root>/etc/tatami/tatami.conf                   configuration
   <root>/etc/tatami/hooks.d/               hooks
   the files of the packages
@@ -397,7 +404,6 @@ Files
 /etc/tatami/tatami.conf               settings and UPGRADE/INSTALL rules
 /var/lib/tatami/db              installed packages and their files
 /var/lib/tatami/meta/<name>    metadata of installed packages, install reason
-/var/lib/tatami/rejected/      new versions of files that were kept (UPGRADE ... NO)
 /var/lib/tatami/transaction.journal   undo log of an installation in progress
 <repository>/repo.solv         binary index of a repository
 /etc/tatami/repos.conf, repos.d/*.conf   repositories (name=url)

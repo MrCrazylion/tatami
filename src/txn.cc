@@ -96,6 +96,20 @@ string txn::backup(const string& path)
 	return bak;
 }
 
+string txn::save_old(const string& path)
+{
+	const string old = path + ".old";
+
+	append("O\t" + path + "\t" + old);
+	record r = { 'O', path, old, 0, 0, 0 };
+	recs_.push_back(r);
+
+	if (rename(path.c_str(), old.c_str()) == -1)
+		throw runtime_error_with_errno("could not rename " + path + " to " + old);
+
+	return old;
+}
+
 void txn::dir_meta(const string& path, const struct stat& st)
 {
 	ostringstream line;
@@ -131,7 +145,8 @@ void txn::undo(const vector<record>& recs)
 			break;
 
 		case 'B':
-			// The backup only exists if the rename happened
+		case 'O':
+			// The backup (or .old file) only exists if the rename happened
 			if (lstat(i->bak.c_str(), &st) == -1)
 				break;
 			if (lstat(i->path.c_str(), &st) == 0 && !S_ISDIR(st.st_mode))
@@ -232,8 +247,8 @@ bool txn::recover(const string& root, ostream& out)
 		} else if (f.size() == 2 && (f[0] == "C" || f[0] == "D")) {
 			record r = { f[0][0], f[1], "", 0, 0, 0 };
 			recs.push_back(r);
-		} else if (f.size() == 3 && f[0] == "B") {
-			record r = { 'B', f[1], f[2], 0, 0, 0 };
+		} else if (f.size() == 3 && (f[0] == "B" || f[0] == "O")) {
+			record r = { f[0][0], f[1], f[2], 0, 0, 0 };
 			recs.push_back(r);
 		} else if (f.size() == 5 && f[0] == "M") {
 			record r = { 'M', f[1], "", (mode_t)strtoul(f[2].c_str(), 0, 8),

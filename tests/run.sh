@@ -180,14 +180,16 @@ has "libfoo 1.1" "libfoo 1.1"
 check "back to latest" 0 ty install libfoo
 has "upgraded" "Upgrading libfoo \(1.1-1 -> 2.0-1\)"
 
-echo "# rejected files (UPGRADE ^etc/ NO)"
+echo "# configuration files (UPGRADE ^etc/ NO): the new file is installed, the existing one becomes <file>.old"
 mkpkg app 2.0 "depends=libfoo >= 1.0, virtual-editor" file=usr/bin/app file=etc/app.conf
 # no explicit update: tatami notices the repository changed
 check "upgrade app" 0 ty install app
-has "reject message" "rejecting etc/app.conf"
-check "locally modified config kept" 0 cat "$ROOT/etc/app.conf"
-has "kept content" "locally modified"
-exists "new config in rejected dir" var/lib/tatami/rejected/etc/app.conf
+has "tells that the old file was saved" "etc/app.conf differs from the existing file, which was saved as etc/app.conf.old"
+check "the package's new config is installed" 0 cat "$ROOT/etc/app.conf"
+has "new content" "app 2.0"
+[ "$(cat "$ROOT/etc/app.conf.old")" = "locally modified" ] && ok "the locally modified file is kept as etc/app.conf.old" || bad "no .old backup" "$(cat "$ROOT/etc/app.conf.old" 2>&1)"
+[ ! -e "$ROOT/var/lib/tatami/rejected" ] && ok "there is no rejected directory any more" || bad "rejected directory exists"
+[ -z "$(find "$ROOT" -name '*.tatami-new*')" ] && ok "no temporary files are left" || bad "temporary files left"
 check "app binary upgraded" 0 cat "$ROOT/usr/bin/app"
 has "new binary" "app 2.0"
 
@@ -681,6 +683,59 @@ absent "deferred deletion carried out" usr/share/rbup/stale
 absent "backup dropped" usr/share/rbup/.tatami-bak.2.0
 has_data "version TWO" && ok "the committed content is kept" || bad "committed content lost"
 absent "journal removed" var/lib/tatami/transaction.journal
+ROOT="$ROOT_MAIN"
+
+echo "# configuration files: .old backups in the transaction journal"
+ROOT="$T/root-cfg"; rm -rf "$ROOT"; mkdir -p "$ROOT/etc"
+python3 - "$T" "$EXT" <<'PY'
+import tarfile, io, sys
+t, ext = sys.argv[1], sys.argv[2]
+def add(tf, name, data=None, typ=tarfile.REGTYPE, mode=0o644, link=""):
+    i = tarfile.TarInfo(name); i.type = typ; i.mode = mode; i.linkname = link
+    if typ == tarfile.REGTYPE:
+        i.size = len(data); tf.addfile(i, io.BytesIO(data))
+    else:
+        tf.addfile(i)
+def pkg(version, conf, broken=False):
+    with tarfile.open("%s/cfg_%s%s.%s" % (t, version, "bad" if broken else "", ext), "w:gz") as tf:
+        add(tf, ".META", ("name: cfg\nversion: %s\n" % version).encode())
+        add(tf, "etc/", typ=tarfile.DIRTYPE, mode=0o755)
+        add(tf, "etc/cfg.conf", conf.encode())
+        add(tf, "etc/cfg-same.conf", b"always the same\n")
+        add(tf, "usr/", typ=tarfile.DIRTYPE, mode=0o755)
+        add(tf, "usr/share/cfg-data", ("data " + version + "\n").encode())
+        if broken:
+            add(tf, "usr/share/zzz-broken", typ=tarfile.LNKTYPE, link="no/such/target")
+pkg("1", "conf v1\n"); pkg("2", "conf v2\n"); pkg("2", "conf v2\n", broken=True)
+pkg("3", "conf v3\n"); pkg("3", "conf v3\n", broken=True)
+PY
+check "install cfg 1" 0 ty install "$T/cfg_1.$EXT"
+[ ! -e "$ROOT/etc/cfg.conf.old" ] && ok "a fresh install makes no .old file" || bad ".old on first install"
+echo "admin edit" > "$ROOT/etc/cfg.conf"
+before=$(snap)
+check "an upgrade that fails halfway is refused" 1 ty install "$T/cfg_2bad.$EXT"
+[ "$before" = "$(snap)" ] && ok "rollback: the edited cfg.conf is back, the new one and any .old are gone, nothing else changed" || bad "rollback differs" "$(diff <(echo "$before") <(echo "$(snap)") | head -8)"
+[ "$(cat "$ROOT/etc/cfg.conf")" = "admin edit" ] && [ ! -e "$ROOT/etc/cfg.conf.old" ] && ok "cfg.conf is the admin's file again, no .old" || bad "config not restored"
+check "the upgrade that works" 0 ty install "$T/cfg_2.$EXT"
+[ "$(cat "$ROOT/etc/cfg.conf")" = "conf v2" ] && [ "$(cat "$ROOT/etc/cfg.conf.old")" = "admin edit" ] && ok "new file installed, the admin's file is cfg.conf.old" || bad "result of the upgrade"
+[ ! -e "$ROOT/etc/cfg-same.conf.old" ] && ok "a config file that did not change gets no .old" || bad "needless .old"
+# a second upgrade replaces the .old file; a failing one must bring both files back
+before=$(snap)
+check "failing upgrade over an existing .old" 1 ty install "$T/cfg_3bad.$EXT"
+[ "$before" = "$(snap)" ] && [ "$(cat "$ROOT/etc/cfg.conf")" = "conf v2" ] && [ "$(cat "$ROOT/etc/cfg.conf.old")" = "admin edit" ] && ok "rollback restored cfg.conf and the previous .old" || bad "rollback with an existing .old" "$(diff <(echo "$before") <(echo "$(snap)") | head -8)"
+# killed after extracting: the next run undoes it
+{ TATAMI_CRASH_AT=extracted "$TATAMI" -r "$ROOT" -c "$CONF" -y install "$T/cfg_3.$EXT" >/dev/null 2>&1; rc=$?; } 2>/dev/null
+[ $rc -eq 137 ] && [ "$(cat "$ROOT/etc/cfg.conf")" = "conf v3" ] && [ "$(cat "$ROOT/etc/cfg.conf.old")" = "conf v2" ] && ok "killed with SIGKILL in the middle: cfg.conf is v3, the .old is v2" || bad "state at the kill (exit $rc)"
+OUT=$(ty remove nothing-here 2>&1)
+has "the next run rolls it back" "rolled back an interrupted transaction"
+[ "$before" = "$(snap)" ] && ok "cfg.conf (v2) and the previous .old (admin edit) are back, byte for byte" || bad "recovery differs" "$(diff <(echo "$before") <(echo "$(snap)") | head -8)"
+# killed after the database commit: the next run finishes, the .old stays
+{ TATAMI_CRASH_AT=committed "$TATAMI" -r "$ROOT" -c "$CONF" -y install "$T/cfg_3.$EXT" >/dev/null 2>&1; rc=$?; } 2>/dev/null
+OUT=$(ty remove nothing-here 2>&1)
+has "the next run finishes it" "finished an interrupted transaction"
+[ "$(cat "$ROOT/etc/cfg.conf")" = "conf v3" ] && [ "$(cat "$ROOT/etc/cfg.conf.old")" = "conf v2" ] && ok "committed: v3 installed, v2 kept as cfg.conf.old" || bad "finished state"
+[ -z "$(find "$ROOT" -name '.tatami-bak*' -o -name '*.tatami-new*')" ] && ok "no backups or temporary files left" || bad "leftovers"
+[ ! -e "$ROOT/var/lib/tatami/rejected" ] && ok "still no rejected directory" || bad "rejected directory exists"
 ROOT="$ROOT_MAIN"
 
 echo "# one transaction per run: all or nothing, across packages"

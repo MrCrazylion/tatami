@@ -43,22 +43,22 @@ bool engine::rule_applies(const compiled_rule& rule, const string& file) const
 	return !regexec(rule.re.get(), file.c_str(), 0, 0, 0);
 }
 
-set<string> engine::make_keep_list(const set<string>& files) const
+set<string> engine::make_config_list(const set<string>& files) const
 {
-	set<string> keep_list;
+	set<string> config_list;
 
 	for (set<string>::const_iterator i = files.begin(); i != files.end(); ++i) {
 		// The last matching rule wins
 		for (vector<compiled_rule>::const_reverse_iterator j = rules_.rbegin(); j != rules_.rend(); ++j) {
 			if (j->event == UPGRADE && rule_applies(*j, *i)) {
 				if (!j->action)
-					keep_list.insert(keep_list.end(), *i);
+					config_list.insert(config_list.end(), *i);
 				break;
 			}
 		}
 	}
 
-	return keep_list;
+	return config_list;
 }
 
 set<string> engine::apply_install_rules(set<string>& files) const
@@ -151,9 +151,9 @@ void engine::install(const string& filename, bool requested)
 		throw runtime_error("listed file(s) already installed (use -f to ignore and overwrite)");
 	}
 
-	set<string> keep_list;
+	set<string> config_list;
 	if (installed)
-		keep_list = make_keep_list(rec.files);
+		config_list = make_config_list(rec.files);
 
 	// A package that is already installed keeps its reason, unless the user now
 	// asks for it explicitly. One that is not installed yet is explicit only if
@@ -168,7 +168,7 @@ void engine::install(const string& filename, bool requested)
 
 	try {
 		tx_->note_install(name, rec.version);
-		pkg_install(UTILNAME, db_.root(), filename, keep_list, non_install_files, *tx_);
+		pkg_install(UTILNAME, db_.root(), filename, config_list, non_install_files, *tx_);
 
 		// -f: the new package takes the files over from their previous owners
 		// (their on-disk copy is simply overwritten by the extraction)
