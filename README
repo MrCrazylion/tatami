@@ -315,6 +315,26 @@ file:// repository never starts FETCHCMD. Publish a remote repository by putting
 the packages and the repo.solv of 'tatami index' on a web server.
 
 
+Install scripts
+---------------
+A file called tatami.install next to the Tatamifile is picked up by tatamk without any
+setting and bundled into the package as the hidden member .INSTALL (it is never
+installed as a file). It may define two bash functions, nothing else is supported:
+
+  pre_install()  { ...; }     # before the package's files are extracted
+  post_install() { ...; }     # after the whole transaction was committed
+
+Both get the package version as $1, and TATAMI_ROOT is set to the installation root.
+When tatami installs or upgrades the package it writes the script to a private
+temporary file (/tmp/tatami-install-XXXXXX), runs bash on it (fork/exec, the version is
+an argument, not part of a command line) and removes the file again. A pre_install that
+exits non-zero aborts the transaction and rolls back everything, earlier packages
+included (what such a script did outside tatami's files cannot be undone). A failing
+post_install is only a warning: the files are committed. There are no scripts for
+removal and no upgrade-specific ones. The scripts run as root on the host, not chrooted:
+a package is trusted code (remote ones are covered by the signature and checksum checks).
+
+
 Holding packages
 ----------------
 HoldPkg = name1 name2 in tatami.conf (space-separated, may be repeated) pins installed

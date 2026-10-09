@@ -117,6 +117,12 @@ package_t pkg_open(const string& filename)
 			continue;
 		}
 
+		if (name == INSTALL_FILE) {
+			if (S_ISREG(mode))
+				result.install_script = read_entry_data(a, filename);
+			continue;
+		}
+
 		if (!name.empty())
 			result.files.insert(result.files.end(), name);
 
@@ -257,8 +263,8 @@ void pkg_install(const string& utilname, const string& root, const string& filen
 		if (archive_filename.empty())
 			continue;	// archive root
 
-		if (archive_filename == META_FILE) {
-			archive_read_data_skip(a);
+		if (archive_filename == META_FILE || archive_filename == INSTALL_FILE) {
+			archive_read_data_skip(a);      // metadata, not part of the system
 			continue;
 		}
 

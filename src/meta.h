@@ -8,6 +8,7 @@
 using namespace std;
 
 #define META_FILE       ".META"         // metadata member inside every package
+#define INSTALL_FILE    ".INSTALL"      // optional: the package's pre_install / post_install functions
 
 // Why an installed package is on the system. "explicit": the user asked for it
 // (or the reason is unknown, as for packages installed before tracking existed:

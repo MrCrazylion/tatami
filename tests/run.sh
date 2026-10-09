@@ -1423,6 +1423,75 @@ check "neither does a plain path repository" 0 "$TATAMI" -y -r "$SG/root" -c "$S
 [ ! -s "$FLOG" ] && ok "no fetch for local repositories" || bad "fetched" "$(cat "$FLOG")"
 echo
 
+echo "# install scripts: tatami.install is bundled as .INSTALL, pre_install and post_install run"
+IS="$T/inst"; rm -rf "$IS"; mkdir -p "$IS/repo" "$IS/root/etc" "$IS/log"
+ILOG="$IS/log/run.log"; export ILOG
+# mki <name> <version> <install-script-body|-> : a package with one file and (maybe) a tatami.install
+mki() {
+	local name="$1" version="$2" body="$3" dir="$IS/recipes/$1-$2"
+	mkdir -p "$dir"
+	printf 'name=%s\nversion=%s\nbuild() { mkdir -p $PKG/usr/share/%s; echo "%s %s" > $PKG/usr/share/%s/f; }\n' "$name" "$version" "$name" "$name" "$version" "$name" > "$dir/Tatamifile"
+	[ "$body" != - ] && printf '%s\n' "$body" > "$dir/tatami.install"
+	"$TATAMK" -c "$TCONF" -f "$dir/Tatamifile" -o "$IS/repo" > "$dir/log" 2>&1 || bad "tatamk $name" "$(cat "$dir/log")"
+}
+mki ins-a 1.0 'pre_install() { echo "pre a $1 root=$TATAMI_ROOT file_there=$([ -e "$TATAMI_ROOT/usr/share/ins-a/f" ] && echo yes || echo no)" >> "$ILOG"; }
+post_install() { echo "post a $1 file_there=$([ -e "$TATAMI_ROOT/usr/share/ins-a/f" ] && echo yes || echo no)" >> "$ILOG"; }
+post_remove() { echo "post_remove a" >> "$ILOG"; }
+pre_remove() { echo "pre_remove a" >> "$ILOG"; }'
+mki ins-plain 1.0 -
+PK="$IS/repo/ins-a_1.0_${HARCH}.tar.gz"; PP="$IS/repo/ins-plain_1.0_${HARCH}.tar.gz"
+members() { python3 -c "import tarfile,sys; print(' '.join(m.name.removeprefix('./') for m in tarfile.open(sys.argv[1])))" "$1"; }
+members "$PK" | grep -qw '\.INSTALL' && ok "tatamk found tatami.install next to the Tatamifile and bundled it as .INSTALL" || bad "no .INSTALL in the package" "$(members "$PK")"
+[ "$(python3 -c "import tarfile,sys; t=tarfile.open(sys.argv[1]); print(t.extractfile('.INSTALL').read().decode().count('pre_install'))" "$PK")" = 1 ] && ok "with the script's content" || bad ".INSTALL content"
+members "$PP" | grep -qw '\.INSTALL' && bad "a package without tatami.install has .INSTALL" || ok "no tatami.install, no .INSTALL"
+grep -q "Bundling tatami.install" "$IS/recipes/ins-a-1.0/log" && ok "tatamk says so" || bad "no message"
+
+IR() { "$TATAMI" -r "$IS/root" -c "$CONF" -y "$@"; }
+before_tmp=$(ls /tmp | grep -c '^tatami-install-')
+check "install it" 0 IR install "$PK"
+has "pre_install is announced" "Running pre_install of ins-a"
+has "and post_install" "Running post_install of ins-a"
+[ "$(sed -n 1p "$ILOG")" = "pre a 1.0 root=$IS/root/ file_there=no" ] && ok "pre_install ran first, with the version and TATAMI_ROOT, before the files exist" || bad "pre_install" "$(cat "$ILOG")"
+[ "$(sed -n 2p "$ILOG")" = "post a 1.0 file_there=yes" ] && ok "post_install ran after the commit, the files are there" || bad "post_install" "$(cat "$ILOG")"
+[ "$(wc -l < "$ILOG")" = 2 ] && ok "nothing else ran" || bad "extra calls" "$(cat "$ILOG")"
+[ ! -e "$IS/root/.INSTALL" ] && IR files ins-a | grep -qv INSTALL && ok ".INSTALL is not installed and not owned by the package" || bad ".INSTALL leaked into the system"
+[ "$(ls /tmp | grep -c '^tatami-install-')" = "$before_tmp" ] && ok "the temporary script files are removed" || bad "temporary files left"
+: > "$ILOG"
+check "removing runs no script (pre_remove/post_remove are not supported)" 0 IR remove ins-a
+[ ! -s "$ILOG" ] && ok "no remove function was called" || bad "remove scripts ran" "$(cat "$ILOG")"
+check "a package with no tatami.install installs as usual" 0 IR install "$PP"
+
+# a failing pre_install aborts and rolls back the whole transaction, earlier packages included
+mki ins-ok 1.0 'pre_install() { echo "pre ok" >> "$ILOG"; }'
+mki ins-bad 1.0 'pre_install() { echo "pre bad" >> "$ILOG"; exit 1; }
+post_install() { echo "post bad (must not run)" >> "$ILOG"; }'
+ROOT="$IS/root"; IR remove ins-plain >/dev/null 2>&1; : > "$ILOG"
+before=$(snap)
+check "pre_install exits 1: the transaction is refused" 1 IR install "$IS/repo/ins-ok_1.0_${HARCH}.tar.gz" "$IS/repo/ins-bad_1.0_${HARCH}.tar.gz"
+has "it says which" "pre_install of ins-bad failed"
+has "and that it rolled back" "the transaction failed, nothing was changed"
+[ "$before" = "$(snap)" ] && ok "rolled back: ins-ok, extracted or not, is gone too, the filesystem is as before" || bad "state differs" "$(diff <(echo "$before") <(echo "$(snap)") | head -6)"
+! grep -q "post bad" "$ILOG" && ok "post_install of the failed package did not run" || bad "post ran" "$(cat "$ILOG")"
+[ "$(ls /tmp | grep -c '^tatami-install-')" = "$before_tmp" ] && ok "temporary files cleaned up after the failure" || bad "temporary files left"
+IR list 2>&1 | grep -q "ins-ok\|ins-bad" && bad "database changed" || ok "the database is untouched"
+ROOT="$ROOT_MAIN"
+
+# a failing post_install is only a warning: the files are committed
+mki ins-post 1.0 'post_install() { echo "post fails" >> "$ILOG"; return 3; }'
+check "post_install exits non-zero: still succeeds" 0 IR install "$IS/repo/ins-post_1.0_${HARCH}.tar.gz"
+has "with a warning" "warning: post_install of ins-post failed"
+[ -f "$IS/root/usr/share/ins-post/f" ] && IR list 2>&1 | grep -q "^ins-post/1.0" && ok "the package stays installed" || bad "rolled back by mistake"
+
+# an upgrade runs the new version's functions with the new version
+mki ins-a 2.0 'pre_install() { echo "pre a $1" >> "$ILOG"; }
+post_install() { echo "post a $1" >> "$ILOG"; }'
+check "install ins-a 1.0 again, then upgrade" 0 IR install "$PK"
+: > "$ILOG"
+check "upgrade to 2.0" 0 IR install "$IS/repo/ins-a_2.0_${HARCH}.tar.gz"
+[ "$(cat "$ILOG")" = "pre a 2.0
+post a 2.0" ] && ok "pre_install and post_install of the new version ran with 2.0" || bad "upgrade scripts" "$(cat "$ILOG")"
+echo
+
 echo "# HoldPkg: held packages are not upgraded, the others are"
 HP="$T/hold"; rm -rf "$HP"; mkdir -p "$HP/srv/core" "$HP/root/etc/tatami"
 SRVDIR="$HP/srv"; FLOG="$HP/fetch.log"; export SRVDIR FLOG; : > "$FLOG"

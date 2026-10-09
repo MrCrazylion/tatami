@@ -11,6 +11,7 @@ using namespace std;
 struct package_t {
 	pkgmeta meta;
 	set<string> files;      // normalised member paths, directories end in '/'
+	string install_script;  // the .INSTALL member (never installed as a file), "" if none
 	unsigned long long bytes;       // total size of the regular files once extracted
 	unsigned long long entries;     // number of members (each takes at least a block or an inode)
 };

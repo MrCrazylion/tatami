@@ -275,6 +275,12 @@ fi
 
 info "Creating $PKGFILE"
 rm -f "$PKG/.META"
+# A tatami.install next to the Tatamifile is bundled as .INSTALL (its pre_install and
+# post_install functions run when the package is installed)
+if [ -f "$RECIPE_DIR/tatami.install" ]; then
+	info "Bundling tatami.install as .INSTALL"
+	cp "$RECIPE_DIR/tatami.install" "$PKG/.INSTALL" && chmod 0644 "$PKG/.INSTALL" || die "could not bundle tatami.install"
+fi
 "$TATAMI" pack -z "$COMPRESSION" "$WORK/.META" "$PKG" "$OUTDIR/$PKGFILE.part" || {
 	rm -f "$OUTDIR/$PKGFILE.part"
 	die "could not create package"

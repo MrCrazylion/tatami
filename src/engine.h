@@ -49,6 +49,11 @@ public:
 	void install(const string& filename, bool requested);
 	void remove(const string& name);
 
+	// Runs one function of a package's .INSTALL script (pre_install or post_install)
+	// with the package version as its argument. Returns true if it succeeded or the
+	// script does not define the function.
+	bool run_script(const string& script, const char* function, const string& version) const;
+
 	// Commits the transaction. Throws (and leaves the transaction to rollback())
 	// if the database cannot be written.
 	void commit();
@@ -82,6 +87,8 @@ private:
 	database& db_;
 	bool force_;
 	unique_ptr<txn> tx_;                    // the open transaction
+	struct post_script { string name, version, text; };
+	vector<post_script> post_scripts_;      // post_install of the packages installed, run after the commit
 	vector<string> cache_files_;            // downloaded packages to delete after the commit
 	set<string> doomed_;                    // files to delete at commit unless a package still owns them
 	vector<pair<string, set<string> > > hook_log_;  // (operation, files), given to the hooks at commit
