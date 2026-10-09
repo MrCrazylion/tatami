@@ -27,7 +27,7 @@
 #  <name>_<version>-<release>_<arch>.tar.<compression>, e.g. zlib_1.3.2-1_x86_64.tar.zst
 #
 
-TATAMI_CONF="/etc/tatami/tatami.conf"
+TATAMI_CONF="@SYSCONFDIR@/tatami/tatami.conf"   # build-time SYSCONFDIR
 ENV_PKG_EXT="${PKG_EXT-}"      # run-time override from the environment
 PKG_EXT="@DEFAULT_PKG_EXT@"    # build-time default (make PKG_EXT=...)
 

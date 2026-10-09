@@ -15,7 +15,9 @@ using namespace std;
 #ifndef DEFAULT_PKG_EXT
 #define DEFAULT_PKG_EXT         ""
 #endif
-#define TATAMI_CONF             "/etc/tatami/tatami.conf"
+// Inside the root, e.g. <root>/etc/tatami/tatami.conf; SYSCONFDIR can be changed at build time
+#include "paths.h"
+#define TATAMI_CONF             "/" TATAMI_SYSCONFDIR "/tatami/tatami.conf"
 // Downloads one remote file; used only for http://, https:// and ftp:// repositories.
 // %URL% and %DEST% are replaced; the command is run directly, not through a shell.
 // Its stderr is read by tatami, which draws the progress bar from the "NN.N%"

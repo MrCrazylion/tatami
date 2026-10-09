@@ -2,19 +2,39 @@
 #  tatami - a package manager in the spirit of pkgutils
 #
 
-# Install locations. Every one has a default and can be overridden on the
-# command line (make PREFIX=/opt/tatami SYSCONFDIR=/opt/etc install). They only
-# say where "make install" puts things; at run time tatami finds its files
-# relative to --root (default /): etc/tatami/tatami.conf, etc/tatami/hooks.d and
-# var/lib/tatami.
+# Build-time configuration. Settings can come from (highest priority first) the
+# make command line, a config.mk next to this Makefile (see config.mk.example),
+# the environment, and the defaults below. Example:
+#   make SYSCONFDIR=/opt/etc DB_DIR=/opt/var/lib/tatami PREFIX=/opt
+-include config.mk
+
+# Where 'make install' puts things
 DESTDIR ?=
 PREFIX ?= /usr
-SYSCONFDIR ?= /etc
-DB_DIR ?= /var/lib/tatami
 BINDIR ?= $(PREFIX)/bin
 MANDIR ?= $(PREFIX)/share/man
+
+# Where tatami looks for its files at run time. These are compiled in as
+# TATAMI_SYSCONFDIR, TATAMI_DB_DIR and TATAMI_CACHEDIR, but always as paths
+# *below the installation root* (--root, default /): with SYSCONFDIR=/opt/etc the
+# configuration is <root>/opt/etc/tatami/tatami.conf. 'make install' installs
+# to the same places. (Setting ETCDIR or VARDIR directly changes only the install.)
+SYSCONFDIR ?= /etc
+DB_DIR ?= /var/lib/tatami
+CACHEDIR ?= /var/cache/tatami
 ETCDIR ?= $(SYSCONFDIR)
 VARDIR ?= $(DB_DIR)
+
+# They must be absolute and plain: they are put into C string literals and a sed script
+$(foreach v,SYSCONFDIR DB_DIR CACHEDIR, \
+  $(if $(filter /%,$($(v))),,$(error $(v) must be an absolute path, not '$($(v))')) \
+  $(if $(shell printf '%s' '$($(v))' | tr -d 'A-Za-z0-9._/+-'),$(error $(v) may only contain letters, digits and ._/+-),))
+
+# the same, relative to the root
+rel = $(patsubst /%,%,$(patsubst %/,%,$(1)))
+RT_SYSCONFDIR = $(call rel,$(SYSCONFDIR))
+RT_DB_DIR = $(call rel,$(DB_DIR))
+RT_CACHEDIR = $(call rel,$(CACHEDIR))
 
 VERSION = 0.1.0
 NAME = tatami-$(VERSION)
@@ -87,7 +107,9 @@ DEP_ARCHIVES = $(LIBSOLV_A) $(LIBARCHIVE_A) $(XZ_A) $(BZIP2_A) $(LZ4_A) $(ZSTD_A
 
 CXXFLAGS ?= -O2
 CXXFLAGS += -std=c++11 -Wall -Wextra -pedantic -D_GNU_SOURCE -DVERSION=\"$(VERSION)\" \
-	    -DDEFAULT_PKG_EXT=\"$(PKG_EXT)\" -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 \
+	    -DDEFAULT_PKG_EXT=\"$(PKG_EXT)\" \
+	    -DTATAMI_SYSCONFDIR=\"$(RT_SYSCONFDIR)\" -DTATAMI_DB_DIR=\"$(RT_DB_DIR)\" \
+	    -DTATAMI_CACHEDIR=\"$(RT_CACHEDIR)\" -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 \
 	    -isystem $(LIBSOLV_INC) \
 	    -isystem $(LIBARCHIVE_DIR)/libarchive \
 	    -isystem $(ZSTD_DIR)/lib -isystem $(ZLIB_DIR) -isystem $(ZLIB_BUILD) \
@@ -107,9 +129,10 @@ OBJECTS = $(SRCS:%.cc=src/%.o)
 
 all: tatami tatamk
 
-# Rebuild when VERSION or PKG_EXT change
+# Rebuild when VERSION, PKG_EXT or a compiled-in path changes
+FLAGS = $(VERSION) $(PKG_EXT) $(RT_SYSCONFDIR) $(RT_DB_DIR) $(RT_CACHEDIR)
 .flags: FORCE
-	@echo '$(VERSION) $(PKG_EXT)' | cmp -s - $@ || echo '$(VERSION) $(PKG_EXT)' > $@
+	@echo '$(FLAGS)' | cmp -s - $@ || echo '$(FLAGS)' > $@
 FORCE:
 
 tatami: $(OBJECTS) $(DEP_ARCHIVES)
@@ -229,7 +252,8 @@ $(LIBARCHIVE_A): $(LIBARCHIVE_BUILD)/Makefile
 	$(MAKE) -C $(LIBARCHIVE_BUILD) archive_static
 
 tatamk: tatamk.in .flags
-	sed -e "s/#VERSION#/$(VERSION)/" -e "s/@DEFAULT_PKG_EXT@/$(PKG_EXT)/" $< > $@
+	sed -e "s/#VERSION#/$(VERSION)/" -e "s/@DEFAULT_PKG_EXT@/$(PKG_EXT)/" \
+	    -e "s|@SYSCONFDIR@|$(SYSCONFDIR)|" $< > $@
 	chmod +x $@
 
 # libsolv's headers must be staged before anything is compiled (order-only)
@@ -250,7 +274,7 @@ check: all
 # below $(VARDIR) are created by tatami itself on first use.
 install: all
 	mkdir -p $(DESTDIR)$(BINDIR) $(DESTDIR)$(ETCDIR) $(DESTDIR)$(ETCDIR)/tatami/hooks.d \
-		$(DESTDIR)$(VARDIR)/packages $(DESTDIR)$(DB_DIR)
+		$(DESTDIR)$(VARDIR)/packages
 	install -m0755 tatami $(DESTDIR)$(BINDIR)/tatami
 	install -m0755 tatamk $(DESTDIR)$(BINDIR)/tatamk
 	@if [ -e $(DESTDIR)$(ETCDIR)/tatami/tatami.conf ]; then \
@@ -266,7 +290,12 @@ install: all
 		fi; \
 	done
 
-# 'clean' keeps the (slow to rebuild) vendored libraries; 'distclean' resets them too
+# 'clean' removes what this project built (objects, dependency files, binaries) but
+# keeps the slow-to-rebuild vendored libraries; 'distclean' resets them too.
+# config.mk is yours and is never removed.
+clean:
+	rm -f src/*.o src/*.d tatami tatamk .flags
+
 distclean: clean
 	rm -f tatami tatamk .flags
 	rm -rf $(LIBSOLV_BUILD) $(ZLIB_BUILD) $(ZSTD_BUILD) $(XZ_BUILD) $(BZIP2_BUILD) $(LZ4_BUILD) $(LIBARCHIVE_BUILD)
