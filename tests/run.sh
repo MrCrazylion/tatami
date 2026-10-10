@@ -71,7 +71,7 @@ depends=($depends)
 conflicts=($conflicts)
 provides=($provides)
 replaces=($replaces)
-${arch:+arch=$arch}
+arch=${arch:-$HARCH}
 build() {
 	mkdir -p \$PKG/usr/share/$name
 	echo "$name $version" > \$PKG/usr/share/$name/version$body
@@ -290,6 +290,7 @@ mkdir -p "$T/recipes/failing"
 cat > "$T/recipes/failing/Tatamifile" <<RECIPE
 name=failing
 version=1
+arch=$HARCH
 build() {
 	mkdir -p \$PKG/usr/bin
 	false
@@ -299,10 +300,10 @@ RECIPE
 check "a failing command in build() fails the build" 1 "$TATAMK" -c "$CONF" -f "$T/recipes/failing/Tatamifile" -o "$T/failout"
 [ ! -e "$T/failout/failing_1_$HARCH.$EXT" ] && ok "no package produced by failing build" || bad "package produced by failing build"
 mkdir -p "$T/recipes/commas"
-printf 'name=commas\nversion=1\ndepends=("a, b")\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/commas/Tatamifile"
+printf 'name=commas\nversion=1\narch='$HARCH'\ndepends=("a, b")\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/commas/Tatamifile"
 check "relation containing a comma is refused" 1 "$TATAMK" -c "$CONF" -f "$T/recipes/commas/Tatamifile" -o "$T/failout"
 mkdir -p "$T/recipes/dash"
-printf 'name=dash\nversion=1\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/-rf; }\n' > "$T/recipes/dash/Tatamifile"
+printf 'name=dash\nversion=1\narch='$HARCH'\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/-rf; }\n' > "$T/recipes/dash/Tatamifile"
 check "file names starting with a dash are packaged" 0 "$TATAMK" -c "$CONF" -f "$T/recipes/dash/Tatamifile" -o "$T/failout"
 check "dash file is in the package" 0 tar -tf "$T/failout/dash_1_$HARCH.$EXT"
 has "listed" "x/-rf"
@@ -392,6 +393,7 @@ mkdir -p "$T/recipes/boxed"
 cat > "$T/recipes/boxed/Tatamifile" <<'RECIPE'
 name=boxed
 version=1
+arch=$(uname -m)
 helper() { echo "from helper"; }
 build() {
 	mkdir -p $PKG/usr/share/boxed
@@ -426,7 +428,7 @@ if [ "$(id -u)" = 0 ] && [ ! -e /tmp/build ] && [ ! -e /tmp/destdir ]; then
 		&& ok "inside: PKG and DESTDIR are /tmp/destdir, recipe functions work, cwd is /tmp/build/src" \
 		|| bad "environment inside the sandbox" "$(tar -xOf "$T/boxout/boxed_1_$HARCH.$EXT" usr/share/boxed/env 2>&1)"
 	mkdir -p "$T/recipes/boxfail"
-	printf 'name=boxfail\nversion=1\nbuild() { mkdir -p $PKG/x; false; echo hi > $PKG/x/f; }\n' > "$T/recipes/boxfail/Tatamifile"
+	printf 'name=boxfail\nversion=1\narch='$HARCH'\nbuild() { mkdir -p $PKG/x; false; echo hi > $PKG/x/f; }\n' > "$T/recipes/boxfail/Tatamifile"
 	OUT=$(PATH="$MOCK:$PATH" TATAMI="$TATAMI" "$TATAMK" -c "$CONF_BULK" -f "$T/recipes/boxfail/Tatamifile" -o "$T/boxout" 2>&1); rc=$?
 	[ $rc -ne 0 ] && [ ! -e "$T/boxout/boxfail_1_$HARCH.$EXT" ] && ok "failing build inside the sandbox fails tatamk" || bad "failing sandboxed build" "$OUT"
 	unset MOCK_EMULATE MOCK_ANY_DEST
@@ -461,7 +463,7 @@ DEFEXT=$(sed -n 's/^PKG_EXT="\([^"]*\)".*/\1/p' "$TATAMK" | head -1)      # empt
 [ "$DEFEXT" != "$EXT" ] && ok "the suite's configured extension differs from the build default" || bad "test extension equals the default"
 EXPECT="${DEFEXT:-tar.zst}"
 mkdir -p "$T/extrepo" "$T/recipes/ext1"
-printf 'name=ext1\nversion=1\nrelease=3\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext1/Tatamifile"
+printf 'name=ext1\nversion=1\nrelease=3\narch='$HARCH'\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext1/Tatamifile"
 printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$T/extrepo" > "$T/noext.conf"
 check "tatamk without PKG_EXT in the config names the package by the default" 0 "$TATAMK" -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 [ -f "$T/extrepo/ext1_1-3_${HARCH}.$EXPECT" ] && ok "package is named ext1_1-3_${HARCH}.$EXPECT" || bad "default-named package missing" "$(ls "$T/extrepo")"
@@ -517,7 +519,7 @@ rm -rf "$T/extrepo"
 echo "# compression formats: all read and written natively, no external program"
 for comp in gz zst xz bz2 lz4 lzma; do
 	mkdir -p "$T/comp-$comp/recipe" "$T/comp-$comp/repo" "$T/comp-$comp/root/etc"
-	printf 'name=cmp-%s\nversion=1\nbuild() { mkdir -p $PKG/usr/share/cmp; echo "compressed with %s" > $PKG/usr/share/cmp/%s; }\n' "$comp" "$comp" "$comp" > "$T/comp-$comp/recipe/Tatamifile"
+	printf 'name=cmp-%s\nversion=1\narch='$HARCH'\nbuild() { mkdir -p $PKG/usr/share/cmp; echo "compressed with %s" > $PKG/usr/share/cmp/%s; }\n' "$comp" "$comp" "$comp" > "$T/comp-$comp/recipe/Tatamifile"
 	printf 'PKG_EXT = %s\nPKG_COMPRESSION = %s\nREPO_DIRS = %s\nBULKHEAD = no\n' "$EXT" "$comp" "$T/comp-$comp/repo" > "$T/comp-$comp/conf"
 	check "tatamk builds a $comp package" 0 "$TATAMK" -c "$T/comp-$comp/conf" -f "$T/comp-$comp/recipe/Tatamifile" -o "$T/comp-$comp/repo"
 	pkgf="$T/comp-$comp/repo/cmp-${comp}_1_$HARCH.$EXT"
@@ -869,7 +871,7 @@ mkp() {
 	done
 	{
 		echo "name=$name"; echo "version=$version"
-		[ "$arch" != - ] && echo "arch=$arch"
+		[ "$arch" != - ] && echo "arch=$arch" || echo "arch=$HARCH"
 		[ "$deps" != - ] && echo "depends=($deps)"
 		echo "build() {$body"; echo "}"
 	} > "$dir/Tatamifile"
@@ -1024,9 +1026,15 @@ printf 'ARCH = riscv64\nBULKHEAD = no\n' > "$AR/old.conf"
 check "ARCH in tatami.conf is an error that says where it went" 1 "$TATAMI" -c "$AR/old.conf" list
 has "it says the machine architecture is used" "ARCH is gone"
 printf 'name=ar-plain\nversion=1\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$AR/recipe/Plain"
+OUT=$("$TATAMK" -c "$AR/mk.conf" -f "$AR/recipe/Plain" -o "$AR/out" 2>"$AR/err.txt"); rc=$?
+[ $rc -ne 0 ] && ok "tatamk refuses a recipe without arch" || bad "recipe without arch built"
+[ "$(cat "$AR/err.txt")" = "Error: arch is not defined in Tatamifile" ] && ok "with exactly the message on stderr" || bad "error message" "$(cat "$AR/err.txt")"
+[ -z "$OUT" ] && ok "and nothing on stdout" || bad "stdout" "$OUT"
+printf 'name=ar-empty\nversion=1\narch=\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$AR/recipe/Empty"
+"$TATAMK" -c "$AR/mk.conf" -f "$AR/recipe/Empty" -o "$AR/out" 2>"$AR/err.txt"; rc=$?
+[ $rc -ne 0 ] && [ "$(cat "$AR/err.txt")" = "Error: arch is not defined in Tatamifile" ] && ok "an empty arch= is the same error" || bad "empty arch" "$(cat "$AR/err.txt")"
+[ -z "$(ls "$AR/out" | grep 'ar-plain\|ar-empty')" ] && ok "no package was produced" || bad "package produced" "$(ls "$AR/out")"
 printf 'ARCH = riscv64\nBULKHEAD = no\n' > "$AR/ignored.conf"
-check "tatamk without arch= uses the machine, ignoring ARCH in the file" 0 "$TATAMK" -c "$AR/ignored.conf" -f "$AR/recipe/Plain" -o "$AR/out"
-[ -f "$AR/out/ar-plain_1_$HARCH.tar.pkg" ] && ok "ar-plain_1_$HARCH.tar.pkg" || bad "plain recipe arch" "$(ls "$AR/out")"
 ROOT="$ROOT_MAIN"
 
 echo "# --root: nothing outside the root is touched (usr-merged root with an ABSOLUTE link /lib -> /usr/lib)"
@@ -1175,7 +1183,7 @@ check "update with a misnamed file" 0 t update
 has "warns that the name differs from the contents" "renamed_9.9-1_$HARCH.$EXT is named differently from its contents \(ed_1.0-1_$HARCH"
 rm -f "$REPO/renamed_9.9-1_$HARCH.$EXT"; t update >/dev/null 2>&1
 mkdir -p "$T/recipes/under_score"
-printf 'name=under_score\nversion=1\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/under_score/Tatamifile"
+printf 'name=under_score\nversion=1\narch='$HARCH'\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/under_score/Tatamifile"
 check "tatamk refuses '_' in a package name" 1 "$TATAMK" -c "$CONF" -f "$T/recipes/under_score/Tatamifile" -o "$T/failout"
 has "explains why" "separates name and version"
 mkdir -p "$T/underdir/x"; echo x > "$T/underdir/x/f"
@@ -1365,6 +1373,7 @@ check "sign with a malformed key fails" 1 "$TATAMI" sign "$SG/abc" "$SG/bad.key"
 cat > "$SG/Tatamifile" <<'RCP'
 name=sg-app
 version=1.0
+arch=$(uname -m)
 build() { mkdir -p $PKG/usr/share/sg-app; echo signed > $PKG/usr/share/sg-app/f; }
 RCP
 ( cd "$SG" && HOME="$SG/home" "$TATAMK" -c "$TCONF" -f "$SG/Tatamifile" -o "$SG/srv/core" ) > "$SG/mk.log" 2>&1
@@ -1475,7 +1484,7 @@ ILOG="$IS/log/run.log"; export ILOG
 mki() {
 	local name="$1" version="$2" body="$3" dir="$IS/recipes/$1-$2"
 	mkdir -p "$dir"
-	printf 'name=%s\nversion=%s\nbuild() { mkdir -p $PKG/usr/share/%s; echo "%s %s" > $PKG/usr/share/%s/f; }\n' "$name" "$version" "$name" "$name" "$version" "$name" > "$dir/Tatamifile"
+	printf 'name=%s\nversion=%s\narch='$HARCH'\nbuild() { mkdir -p $PKG/usr/share/%s; echo "%s %s" > $PKG/usr/share/%s/f; }\n' "$name" "$version" "$name" "$name" "$version" "$name" > "$dir/Tatamifile"
 	[ "$body" != - ] && printf '%s\n' "$body" > "$dir/tatami.install"
 	"$TATAMK" -c "$TCONF" -f "$dir/Tatamifile" -o "$IS/repo" > "$dir/log" 2>&1 || bad "tatamk $name" "$(cat "$dir/log")"
 }
@@ -1638,10 +1647,10 @@ echo
 
 echo "# sensible defaults: nothing configured at all"
 DF="$T/defaults"; rm -rf "$DF"; mkdir -p "$DF/recipe" "$DF/out" "$DF/root"
-printf 'name=dflt\nversion=1.0\nbuild() { mkdir -p "$PKG/usr/bin"; echo hi > "$PKG/usr/bin/dflt"; }\n' > "$DF/recipe/Tatamifile"
+printf 'name=dflt\nversion=1.0\narch='$HARCH'\nbuild() { mkdir -p "$PKG/usr/bin"; echo hi > "$PKG/usr/bin/dflt"; }\n' > "$DF/recipe/Tatamifile"
 # no config file (-c points nowhere), no PKG_EXT, no compression, no arch in the recipe
 ( cd "$DF/recipe" && env -u PKG_EXT "$TATAMK" -c "$DF/none.conf" --no-bulkhead -o "$DF/out" ) >"$DF/mk.log" 2>&1
-[ -f "$DF/out/dflt_1.0_$HARCH.tar.pkg" ] && ok "default package is <name>_<version>_<uname -m>.tar.pkg" || bad "default package name"
+[ -f "$DF/out/dflt_1.0_$HARCH.tar.pkg" ] && ok "default package is <name>_<version>_<arch of the recipe>.tar.pkg" || bad "default package name"
 check "tatami reads the unconfigured package" 0 bash -c "'$TATAMI' -r '$DF/root' -c '$DF/none.conf' show '$DF/out/dflt_1.0_$HARCH.tar.pkg' >/dev/null || true"
 mkdir -p "$DF/root/etc/tatami"
 # default config missing, empty, unreadable -> internal defaults, default repository <root>/var/lib/tatami/packages

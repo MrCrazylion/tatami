@@ -280,7 +280,7 @@ version=1.3.2
 release=1
 source=(https://example.org/zlib-$version.tar.gz)
 depends=(libfoo "libbar >= 2.0" "a | b")      # also conflicts, provides, replaces
-arch=noarch                                   # optional; default: uname -m
+arch=noarch                                   # required; no fallback
 
 build() {
         cd zlib-$version

@@ -140,7 +140,8 @@ All compression formats are read and written by tatami itself.
 
 Packages for other architectures are refused. tatami always uses the machine's architecture
 (`uname -m`); there is no setting for it. `noarch` packages are accepted everywhere.
-`tatamk` takes the architecture from `arch=` in the recipe (the machine's if there is none).
+`tatamk` takes the architecture from `arch=` in the recipe. It is required: a recipe without it is refused, with no fallback to the
+build machine (use `arch=noarch` for architecture-independent packages).
 
 ### Other useful settings
 
@@ -257,6 +258,7 @@ this file:
 # Description: A friendly greeter
 name=hello
 version=1.0
+arch=noarch
 release=1
 
 build() {
@@ -266,6 +268,7 @@ build() {
 }
 ```
 
+`arch` is required (use `noarch` for scripts, otherwise the target architecture such as `x86_64`).
 `build()` runs in the unpacked sources (`$SRC`) and must install everything into `$PKG`. A real
 recipe also lists `source=(...)` and `depends=(...)` and typically ends with
 `make DESTDIR=$PKG install`.

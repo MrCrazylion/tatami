@@ -14,7 +14,7 @@
 #    conflicts=(example-git)
 #    provides=(example-virtual)
 #    replaces=(oldexample)
-#    arch=noarch                    # optional, default: machine architecture
+#    arch=x86_64                    # required: the architecture, or noarch
 #
 #    build() {
 #            cd example-$version
@@ -150,8 +150,6 @@ if [ "$BULKHEAD" = yes ]; then
 	command -v bwrap >/dev/null 2>&1 || die "isolated builds require bwrap (bubblewrap), which was not found in PATH.
          Install bubblewrap, or build without isolation using --no-bulkhead (or BULKHEAD=no in tatami.conf)."
 fi
-ARCH=$(uname -m)               # only used when the recipe has no arch=
-
 RECIPE_DIR=$(cd "$(dirname "$RECIPE")" && pwd) || die "cannot enter recipe directory"
 RECIPE_FILE="$RECIPE_DIR/$(basename "$RECIPE")"
 mkdir -p "$OUTDIR" || die "cannot create $OUTDIR"
@@ -170,6 +168,7 @@ done
 
 [ -n "$name" ] || die "recipe does not set 'name'"
 [ -n "$version" ] || die "recipe does not set 'version'"
+[ -n "$arch" ] || { echo "Error: arch is not defined in Tatamifile" >&2; exit 1; }
 [ "$(type -t build)" = "function" ] || die "recipe does not define build()"
 case "$name$version$release" in
 *[!A-Za-z0-9+.~:-]*) die "name, version and release may only contain letters, digits and + . ~ : - ('_' separates name and version in file names)" ;;
@@ -178,7 +177,7 @@ case "$name" in [!A-Za-z0-9]*) die "name must start with a letter or digit" ;; e
 
 pkgversion="$version"
 [ -n "$release" ] && pkgversion="$version-$release"
-pkgarch="${arch:-$ARCH}"
+pkgarch="$arch"
 # noarch, all and any (any case) are the same: not tied to an architecture
 case "$(printf '%s' "$pkgarch" | tr 'A-Z' 'a-z')" in
 noarch|all|any) pkgarch=noarch ;;

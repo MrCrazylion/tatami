@@ -51,9 +51,14 @@ Arrays of relations, one per element:
 An element may not contain a comma.
 .TP
 .B arch
-Optional. The default is the output of
-.BR "uname \-m" .
-The architecture is never taken from the configuration.
+Required. There is no default:
+without it (or with an empty value) tatamk prints
+.B Error: arch is not defined in Tatamifile
+and exits with status 1.
+Use the target architecture, or
+.B noarch
+for architecture\-independent packages.
+It is never taken from the configuration or the build machine.
 .BR noarch ,
 .B all
 and
