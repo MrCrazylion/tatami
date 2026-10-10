@@ -30,6 +30,7 @@
 TATAMI_CONF="@SYSCONFDIR@/tatami/tatami.conf"   # build-time SYSCONFDIR
 ENV_PKG_EXT="${PKG_EXT-}"      # run-time override from the environment
 PKG_EXT="@DEFAULT_PKG_EXT@"    # build-time default (make PKG_EXT=...)
+DEFAULT_COMPRESSION="@DEFAULT_PKG_COMPRESSION@"    # build-time default (make PKG_COMPRESSION=...)
 
 info() { echo "=======> $1"; }
 error() { echo "=======> ERROR: $1" >&2; }
@@ -41,7 +42,7 @@ print_help() {
 	echo "  -f, --file <recipe>   recipe to build (default: Tatamifile)"
 	echo "  -o, --output <dir>    where to put the package (default: current directory)"
 	echo "  -c, --config <file>   use alternative configuration file"
-	echo "  -z, --compression <c> gz, zst (default), xz, bz2, lz4, lzma or none"
+	echo "  -z, --compression <c> gz, xz, zst, bz2, lz4, lzma or none (default: '@DEFAULT_PKG_COMPRESSION@')"
 	echo "  -k, --keep-work       do not remove the work directory"
 	echo "      --no-bulkhead     build on the host, without the bwrap sandbox"
 	echo "                        (alias --no-sandbox; or BULKHEAD=no in tatami.conf)"
@@ -112,7 +113,7 @@ case "$PKG_EXT" in
 *[!A-Za-z0-9._-]*) die "invalid PKG_EXT '$PKG_EXT'" ;;
 esac
 
-# Compression: option, then tatami.conf, then what a configured extension ends in, then zstd.
+# Compression: option, then tatami.conf, then what a configured extension ends in, then the build-time default (zstd).
 # It is done by 'tatami pack' with libarchive: no tar or compression program is used.
 COMPRESSION="${COMPRESSION_OPT:-$(conf_get PKG_COMPRESSION)}"
 if [ -z "$COMPRESSION" ]; then
@@ -123,7 +124,7 @@ if [ -z "$COMPRESSION" ]; then
 	*bz2) COMPRESSION=bz2 ;;
 	*lz4) COMPRESSION=lz4 ;;
 	*lzma) COMPRESSION=lzma ;;
-	*) COMPRESSION=zst ;;
+	*) COMPRESSION="$DEFAULT_COMPRESSION" ;;
 	esac
 fi
 case "$COMPRESSION" in

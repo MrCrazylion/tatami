@@ -245,13 +245,16 @@ with pacman's `IgnorePkg`). Held packages that are not installed are ignored.
 - `/etc/tatami/tatami.conf` — settings (`PKG_EXT`, `PKG_COMPRESSION`, `ARCH`,
   `REPO_DIRS`, `FETCHCMD`, `PUBKEY`, `HoldPkg`, `BULKHEAD`) and the `UPGRADE`/`INSTALL`
   rules. Missing, empty or unreadable is fine: the built-in defaults apply.
-- **Build time.** `build.conf`, provided with the sources, is a plain list of `KEY=VALUE`
-  lines (`PREFIX`, `SYSCONFDIR`, `DB_DIR`, `CACHEDIR`, `PKG_EXT`) that the Makefile
-  includes; a key that is absent falls back to the Makefile's default, and the `make`
-  command line beats both. `SYSCONFDIR`, `DB_DIR` and `CACHEDIR` are validated and
-  compiled in as paths *below the root*, so a custom layout still works with `--root`;
-  `PREFIX`, `BINDIR`, `MANDIR` and `DESTDIR` control `make install`. The layout defaults
-  to the FHS: `/etc/tatami`, `/var/lib/tatami`, `/var/cache/tatami`.
+- **Build time.** `build.conf`, provided with the sources, is a template of commented-out
+  `KEY=VALUE` lines (`PREFIX`, `SYSCONFDIR`, `DB_DIR`, `CACHEDIR`, `PKG_EXT`,
+  `PKG_COMPRESSION`) that the Makefile includes. Nothing in it is active, because an
+  active empty assignment would stop the Makefile's `?=` defaults from applying; to
+  override a default, uncomment and edit its line. The `make` command line beats both.
+  `SYSCONFDIR`, `DB_DIR` and `CACHEDIR` are validated and compiled in as paths *below the
+  root*, so a custom layout still works with `--root`; `PKG_EXT` is compiled into tatami and
+  substituted into `tatamk`, as is `PKG_COMPRESSION`; `PREFIX`, `BINDIR`, `MANDIR` and
+  `DESTDIR` control `make install`. The layout defaults to the FHS: `/etc/tatami`,
+  `/var/lib/tatami`, `/var/cache/tatami`.
 
 ---
 

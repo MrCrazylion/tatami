@@ -54,14 +54,16 @@ instead, and every compression is then accepted.
 .BR tatamk 's
 compression: one of
 .BR gz ,
-.B zst
-(the default),
+.BR zst ,
 .BR xz ,
 .BR bz2 ,
 .BR lz4 ,
 .B lzma
 or
 .BR none .
+The default is the one chosen when tatami was built
+.RB ( zst
+unless changed).
 .TP
 .B ARCH
 Architecture of the target system; the default is

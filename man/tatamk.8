@@ -151,14 +151,18 @@ Use this configuration file instead of
 .BR \-z ", " \-\-compression " " \fIc\fP
 One of
 .BR gz ,
-.B zst
-(the default),
+.BR zst ,
 .BR xz ,
 .BR bz2 ,
 .BR lz4 ,
 .B lzma
 or
 .BR none .
+The default is
+.B PKG_COMPRESSION
+from the configuration file, else the one chosen when tatami was built
+.RB ( zst
+unless changed), unless the package extension itself names one.
 Compression is done by tatami itself.
 .TP
 .BR \-k ", " \-\-keep\-work

@@ -46,35 +46,49 @@ cd tatami
 git submodule update --init
 ```
 
-### Choose the paths and the package extension (optional)
+### Choose the paths, the extension and the compression (optional)
 
-Before compiling you can edit [`build.conf`](build.conf), a plain text file of `KEY=VALUE`
-lines that comes with the sources:
+Before compiling you can edit [`build.conf`](build.conf). It is a template: every line is
+commented out, and the Makefile has a default for each key.
 
 ```
-# tatami build configuration
-PREFIX=/usr
-SYSCONFDIR=/etc
-DB_DIR=/var/lib/tatami
-CACHEDIR=/var/cache/tatami
-PKG_EXT=tar.pkg
+# tatami build configuration template
+# Uncomment and modify the fields below to override the Makefile defaults.
+#
+# PREFIX=/usr
+# SYSCONFDIR=/etc
+# DB_DIR=/var/lib/tatami
+# CACHEDIR=/var/cache/tatami
+# PKG_EXT=tar.pkg
+# PKG_COMPRESSION=zst
 ```
 
-| Key | Meaning |
-|---|---|
-| `PREFIX` | `make install` puts `tatami` and `tatamk` in `$(PREFIX)/bin` and the manual pages in `$(PREFIX)/share/man` |
-| `SYSCONFDIR` | configuration directory: `$(SYSCONFDIR)/tatami/` |
-| `DB_DIR` | package database, journal, indexes of remote repositories, local repository |
-| `CACHEDIR` | downloaded packages |
-| `PKG_EXT` | default package file extension (no leading dot); empty means `tar.<compression>` |
+To override a default, uncomment its line (remove the `# `) and change the value:
 
-Write one `KEY=VALUE` per line, with no spaces around `=` and comments on lines of their
-own. A key you delete simply gets its default. `SYSCONFDIR`, `DB_DIR`, `CACHEDIR` and
-`PKG_EXT` are compiled into the programs (the three directories always as paths below the
-`--root`), so change them **before** you build; they must be absolute paths. The `make`
-command line still wins over the file: `make PREFIX=/opt/tatami`, and
-`make DESTDIR=/tmp/pkg install` stages an installation. `make clean` never touches
-`build.conf`.
+```
+PREFIX=/opt/tatami
+PKG_COMPRESSION=xz
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `PREFIX` | `/usr` | `make install` puts `tatami` and `tatamk` in `$(PREFIX)/bin` and the manual pages in `$(PREFIX)/share/man` |
+| `SYSCONFDIR` | `/etc` | configuration directory: `$(SYSCONFDIR)/tatami/` |
+| `DB_DIR` | `/var/lib/tatami` | package database, journal, indexes of remote repositories, local repository |
+| `CACHEDIR` | `/var/cache/tatami` | downloaded packages |
+| `PKG_EXT` | `tar.pkg` | package file extension (no leading dot); empty means `tar.<compression>` |
+| `PKG_COMPRESSION` | `zst` | compression `tatamk` uses: `gz`, `zst`, `xz`, `bz2`, `lz4`, `lzma` or `none` |
+
+Leave a line commented out to keep the default; do not leave an active line with an empty
+value (`PREFIX=`), because that makes the variable intentionally empty instead of using the
+default. Put one `KEY=VALUE` per line, with no spaces around `=` and comments on lines of
+their own. `SYSCONFDIR`, `DB_DIR`, `CACHEDIR`, `PKG_EXT` and `PKG_COMPRESSION` are compiled
+into the programs (the three directories always as paths below the `--root`), so change them
+**before** you build; the directories must be absolute paths. A value in `build.conf` beats
+an environment variable of the same name, and the `make` command line beats both:
+`make PREFIX=/opt/tatami`; `make DESTDIR=/tmp/pkg install` stages an installation. `make
+clean` never touches `build.conf`. `PKG_EXT` and `PKG_COMPRESSION` can still be changed at run
+time in `tatami.conf` (see below).
 
 ### Build and install
 

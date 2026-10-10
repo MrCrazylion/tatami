@@ -5,6 +5,7 @@
 cd "$(dirname "$0")/.." || exit 1
 export TATAMI="$PWD/tatami"   # tatamk builds packages through the tatami binary
 TATAMK="$PWD/tatamk"
+REPO_ROOT_DIR="$PWD"
 T="$PWD/tests/work"
 ROOT="$T/root"
 REPO="$T/repo"
@@ -451,6 +452,18 @@ printf 'PKG_EXT =\nREPO_DIRS = %s\nBULKHEAD = no\n' "$T/extrepo" > "$T/auto.conf
 rm -f "$T/extrepo"/ext1_*
 check "PKG_EXT = (empty) names the package by its compression" 0 "$TATAMK" -c "$T/auto.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 [ -f "$T/extrepo/ext1_1-3_${HARCH}.tar.zst" ] && ok "default compression zstd: ext1_1-3_${HARCH}.tar.zst" || bad "automatic name missing" "$(ls "$T/extrepo")"
+# the default compression is the build-time one (a copy of tatamk with another default stands in for a rebuild)
+DEFCOMP=$(sed -n 's/^DEFAULT_COMPRESSION="\([^"]*\)".*/\1/p' "$TATAMK" | head -1)
+[ "$DEFCOMP" = zst ] && ok "the build-time compression is zst by default" || bad "default compression is not zst" "$DEFCOMP"
+sed 's/^DEFAULT_COMPRESSION="zst"/DEFAULT_COMPRESSION="gz"/' "$TATAMK" > "$T/tatamk-gzdefault"; chmod +x "$T/tatamk-gzdefault"
+rm -f "$T/extrepo"/ext1_*
+check "a tatamk built with PKG_COMPRESSION=gz" 0 "$T/tatamk-gzdefault" -c "$T/auto.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+[ -f "$T/extrepo/ext1_1-3_${HARCH}.tar.gz" ] && [ "$(head -c 2 "$T/extrepo/ext1_1-3_${HARCH}.tar.gz" | od -An -tx1 | tr -d ' \n')" = 1f8b ] && ok "compresses with gzip by default" || bad "build-time compression ignored" "$(ls "$T/extrepo")"
+check "-z and the configuration still beat the build-time default" 0 "$T/tatamk-gzdefault" -z xz -c "$T/auto.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+[ -f "$T/extrepo/ext1_1-3_${HARCH}.tar.xz" ] && ok "-z xz wins" || bad "-z ignored"
+grep -v '^#' "$REPO_ROOT_DIR/build.conf" 2>/dev/null | grep -q '[^[:space:]]' && bad "build.conf has an active assignment" || ok "build.conf has only commented-out lines"
+rm -f "$T/extrepo"/ext1_*
+check "back to the default" 0 "$TATAMK" -c "$T/auto.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 if true; then
 	for c in xz gz bz2 lz4 lzma; do
 		check "tatamk -z $c names the package tar.$c" 0 "$TATAMK" -z $c -c "$T/auto.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"

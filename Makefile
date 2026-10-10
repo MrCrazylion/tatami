@@ -2,9 +2,10 @@
 #  tatami - a package manager in the spirit of pkgutils
 #
 
-# Build-time configuration. build.conf holds plain KEY=VALUE lines (edit it before
-# building); a value there beats the defaults below, and the make command line
-# beats both. Example:
+# Build-time configuration. build.conf is a template of commented-out KEY=VALUE lines:
+# uncomment and edit a line before building to override the default below, and the
+# make command line beats both. (Nothing in it is active by default: an active empty
+# assignment would stop the ?= defaults below from applying.) Example:
 #   make SYSCONFDIR=/opt/etc DB_DIR=/opt/var/lib/tatami PREFIX=/opt
 -include build.conf
 
@@ -56,6 +57,15 @@ NAME = tatami-$(VERSION)
 # tools) and, for tatamk only, the PKG_EXT environment variable.
 PKG_EXT ?= tar.pkg
 PKG_EXT := $(strip $(PKG_EXT))
+
+# The compression tatamk uses unless -z, PKG_COMPRESSION in tatami.conf or a PKG_EXT
+# that names one says otherwise: gz, zst, xz, bz2, lz4, lzma or none. tatamk gets it as
+# the @DEFAULT_PKG_COMPRESSION@ substitution.
+PKG_COMPRESSION ?= zst
+PKG_COMPRESSION := $(strip $(PKG_COMPRESSION))
+ifeq ($(filter $(PKG_COMPRESSION),gz zst xz bz2 lz4 lzma none),)
+$(error PKG_COMPRESSION must be one of gz, zst, xz, bz2, lz4, lzma, none, not '$(PKG_COMPRESSION)')
+endif
 ifneq ($(shell printf '%s' '$(PKG_EXT)' | tr -d 'A-Za-z0-9._-'),)
 $(error PKG_EXT may only contain letters, digits, '.', '_' and '-')
 endif
@@ -146,7 +156,7 @@ OBJECTS = $(SRCS:%.cc=src/%.o)
 all: tatami tatamk
 
 # Rebuild when VERSION, PKG_EXT or a compiled-in path changes
-FLAGS = $(VERSION) $(PKG_EXT) $(RT_SYSCONFDIR) $(RT_DB_DIR) $(RT_CACHEDIR)
+FLAGS = $(VERSION) $(PKG_EXT) $(PKG_COMPRESSION) $(RT_SYSCONFDIR) $(RT_DB_DIR) $(RT_CACHEDIR)
 .flags: FORCE
 	@echo '$(FLAGS)' | cmp -s - $@ || echo '$(FLAGS)' > $@
 FORCE:
@@ -279,6 +289,7 @@ $(LIBARCHIVE_A): $(LIBARCHIVE_BUILD)/Makefile
 
 tatamk: tatamk.in .flags
 	sed -e "s/#VERSION#/$(VERSION)/" -e "s/@DEFAULT_PKG_EXT@/$(PKG_EXT)/" \
+	    -e "s/@DEFAULT_PKG_COMPRESSION@/$(PKG_COMPRESSION)/" \
 	    -e "s|@SYSCONFDIR@|$(SYSCONFDIR)|" $< > $@
 	chmod +x $@
 
