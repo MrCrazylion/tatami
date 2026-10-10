@@ -3,7 +3,7 @@
 #
 
 # Build-time configuration. Settings can come from (highest priority first) the
-# make command line, a config.mk next to this Makefile (see config.mk.example),
+# make command line, the config.mk next to this Makefile (edit it),
 # the environment, and the defaults below. Example:
 #   make SYSCONFDIR=/opt/etc DB_DIR=/opt/var/lib/tatami PREFIX=/opt
 -include config.mk

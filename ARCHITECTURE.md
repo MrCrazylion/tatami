@@ -245,8 +245,8 @@ with pacman's `IgnorePkg`). Held packages that are not installed are ignored.
 - `/etc/tatami/tatami.conf` — settings (`PKG_EXT`, `PKG_COMPRESSION`, `ARCH`,
   `REPO_DIRS`, `FETCHCMD`, `PUBKEY`, `HoldPkg`, `BULKHEAD`) and the `UPGRADE`/`INSTALL`
   rules. Missing, empty or unreadable is fine: the built-in defaults apply.
-- **Build time.** The Makefile reads an optional `config.mk` (see `config.mk.example`)
-  and the command line. `SYSCONFDIR`, `DB_DIR` and `CACHEDIR` are validated and compiled
+- **Build time.** The Makefile reads `config.mk`, which is provided with the sources and
+  can be edited directly, and the command line. `SYSCONFDIR`, `DB_DIR` and `CACHEDIR` are validated and compiled
   in, as paths *below the root*, so a custom layout still works with `--root`;
   `PREFIX`, `BINDIR`, `MANDIR` and `DESTDIR` control `make install`. The layout
   defaults to the FHS: `/etc/tatami`, `/var/lib/tatami`, `/var/cache/tatami`.
