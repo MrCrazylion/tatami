@@ -88,8 +88,29 @@ PKG_EXT = $EXT
 REPO_DIRS   =   $REPO
 PKG_COMPRESSION=  gz
 BULKHEAD = no
-UPGRADE ^etc/.*\$ NO
 CONFIG
+# the file rules and the held packages live in the root's etc/tatami, not in tatami.conf
+set_rules() { mkdir -p "$1/etc/tatami"; printf 'UPGRADE ^etc/.*$ NO\n' > "$1/etc/tatami/upgrade.rules"; }
+set_rules "$ROOT"
+cat > "$T/fakeuname.c" <<'C'
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/utsname.h>
+/* reports FAKE_MACHINE as the machine architecture (uname -m) */
+int uname(struct utsname *u) {
+	int (*real)(struct utsname *) = dlsym(RTLD_NEXT, "uname");
+	int r = real(u);
+	const char *e = getenv("FAKE_MACHINE");
+	if (r == 0 && e) { strncpy(u->machine, e, sizeof u->machine - 1); u->machine[sizeof u->machine - 1] = 0; }
+	return r;
+}
+C
+HAVE_UNAME_SHIM=0
+cc -shared -fPIC -o "$T/fakeuname.so" "$T/fakeuname.c" -ldl 2>/dev/null && ldd "$TATAMI" >/dev/null 2>&1 && HAVE_UNAME_SHIM=1
+# machine <arch> <command...>: run with uname() reporting that architecture
+machine() { local m="$1"; shift; env LD_PRELOAD="$T/fakeuname.so" FAKE_MACHINE="$m" "$@"; }
 
 echo "# building packages"
 mkpkg libfoo 1.0 file=usr/lib/libfoo.so.1
@@ -431,7 +452,7 @@ check "a package for another architecture is still refused" 1 ty install na-fore
 has "with the architecture message" "incompatible with this system"
 absent "foreign package not installed" usr/share/na/foreign
 check "noarch also installs from a file argument" 0 ty install "$REPO/na-any_1.0-1_noarch.$EXT"
-check "noarch installs when the host architecture is unknown to libsolv" 0 bash -c "echo 'ARCH = zz80' > '$T/zz.conf'; cat '$CONF' >> '$T/zz.conf'; '$TATAMI' -r '$ROOT' -c '$T/zz.conf' -s install na-noarch"
+check "noarch installs when the host architecture is unknown to libsolv" 0 machine zz80 "$TATAMI" -r "$ROOT" -c "$CONF" -s install na-noarch
 
 echo "# package names: <name>_<version>-<release>_<arch>.tar.<compression>, or a fixed extension"
 DEFEXT=$(sed -n 's/^PKG_EXT="\([^"]*\)".*/\1/p' "$TATAMK" | head -1)      # empty unless built with make PKG_EXT=...
@@ -705,7 +726,7 @@ absent "journal removed" var/lib/tatami/transaction.journal
 ROOT="$ROOT_MAIN"
 
 echo "# configuration files: .old backups in the transaction journal"
-ROOT="$T/root-cfg"; rm -rf "$ROOT"; mkdir -p "$ROOT/etc"
+ROOT="$T/root-cfg"; rm -rf "$ROOT"; mkdir -p "$ROOT/etc"; set_rules "$ROOT"
 python3 - "$T" "$EXT" <<'PY'
 import tarfile, io, sys
 t, ext = sys.argv[1], sys.argv[2]
@@ -978,11 +999,11 @@ for a in riscv64 x86_64 i686 aarch64 noarch; do mkp "$AR/repo" "ar-${a//_/}" 1.0
 mkp "$AR/repo" ar-needs 1.0 noarch '"ar-aarch64"' usr/share/ar-needs/f:needs
 "$TATAMI" index "$AR/repo" >/dev/null 2>&1
 ROOT="$AR/root"
-arch_try() { # arch-policy package... : install in a fresh root configured for that architecture
-	local policy="$1"; shift
+arch_try() { # machine package... : install in a fresh root on a host that reports that machine
+	local mach="$1"; shift
 	rm -rf "$ROOT"; mkdir -p "$ROOT/etc"
-	printf 'ARCH = %s\nREPO_DIRS = %s\nBULKHEAD = no\n' "$policy" "$AR/repo" > "$AR/c.conf"
-	OUT=$("$TATAMI" -r "$ROOT" -c "$AR/c.conf" -y install "$@" 2>&1); rc=$?
+	printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$AR/repo" > "$AR/c.conf"
+	OUT=$(machine "$mach" "$TATAMI" -r "$ROOT" -c "$AR/c.conf" -y install "$@" 2>&1); rc=$?
 }
 arch_try riscv64 ar-riscv64 ar-noarch; [ $rc -eq 0 ] && ok "a riscv64 target installs riscv64 and noarch packages" || bad "riscv64 target" "$OUT"
 exists "riscv64 package installed" usr/share/ar-riscv64/f
@@ -990,17 +1011,22 @@ arch_try riscv64 ar-aarch64; [ $rc -ne 0 ] && echo "$OUT" | grep -q "incompatibl
 arch_try riscv64 ar-x8664; [ $rc -ne 0 ] && ok "and an x86_64 one" || bad "x86_64 accepted on riscv64" "$OUT"
 arch_try x86_64 ar-x8664; [ $rc -eq 0 ] && ok "an x86_64 target installs x86_64 packages" || bad "x86_64 target" "$OUT"
 arch_try x86_64 ar-i686; [ $rc -ne 0 ] && ok "an x86_64 target does not install i686 packages (no implicit multilib)" || bad "i686 accepted on a plain x86_64 target" "$OUT"
-arch_try x86_64:i686 ar-x8664 ar-i686; [ $rc -eq 0 ] && ok "ARCH = x86_64:i686 allows both" || bad "multilib target" "$OUT"
-arch_try x86_64:i686 ar-aarch64; [ $rc -ne 0 ] && ok "but still not aarch64" || bad "aarch64 accepted on x86_64:i686" "$OUT"
 arch_try "$HARCH" ar-noarch; [ $rc -eq 0 ] && ok "noarch fits any target" || bad "noarch refused" "$OUT"
 arch_try riscv64 ar-needs; [ $rc -ne 0 ] && echo "$OUT" | grep -q "ar-aarch64" && ok "a dependency that exists only for another architecture is not found" || bad "wrong-arch dependency accepted" "$OUT"
 arch_try aarch64 ar-needs; [ $rc -eq 0 ] && exists "while on aarch64 it resolves" usr/share/ar-aarch64/f || bad "dependency on the right arch" "$OUT"
-# tatamk follows the same configuration: its default architecture is the first ARCH entry
-mkdir -p "$AR/recipe"; printf 'name=ar-default\nversion=1\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$AR/recipe/Tatamifile"
-printf 'ARCH = riscv64:foo\nBULKHEAD = no\nPKG_COMPRESSION = gz\n' > "$AR/mk.conf"
-check "tatamk builds for the configured target architecture" 0 "$TATAMK" -c "$AR/mk.conf" -f "$AR/recipe/Tatamifile" -o "$AR/out"
+# tatamk takes the architecture from the recipe, never from the configuration
+mkdir -p "$AR/recipe"; printf 'name=ar-default\nversion=1\narch=riscv64\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$AR/recipe/Tatamifile"
+printf 'BULKHEAD = no\nPKG_COMPRESSION = gz\n' > "$AR/mk.conf"
+check "tatamk builds for the architecture of the recipe" 0 "$TATAMK" -c "$AR/mk.conf" -f "$AR/recipe/Tatamifile" -o "$AR/out"
 [ -f "$AR/out/ar-default_1_riscv64.tar.pkg" ] && ok "ar-default_1_riscv64.tar.pkg" || bad "arch in file name" "$(ls "$AR/out")"
 check "tatami read the architecture back" 0 "$TATAMI" -c "$AR/mk.conf" files "$AR/out/ar-default_1_riscv64.tar.pkg"
+printf 'ARCH = riscv64\nBULKHEAD = no\n' > "$AR/old.conf"
+check "ARCH in tatami.conf is an error that says where it went" 1 "$TATAMI" -c "$AR/old.conf" list
+has "it says the machine architecture is used" "ARCH is gone"
+printf 'name=ar-plain\nversion=1\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$AR/recipe/Plain"
+printf 'ARCH = riscv64\nBULKHEAD = no\n' > "$AR/ignored.conf"
+check "tatamk without arch= uses the machine, ignoring ARCH in the file" 0 "$TATAMK" -c "$AR/ignored.conf" -f "$AR/recipe/Plain" -o "$AR/out"
+[ -f "$AR/out/ar-plain_1_$HARCH.tar.pkg" ] && ok "ar-plain_1_$HARCH.tar.pkg" || bad "plain recipe arch" "$(ls "$AR/out")"
 ROOT="$ROOT_MAIN"
 
 echo "# --root: nothing outside the root is touched (usr-merged root with an ABSOLUTE link /lib -> /usr/lib)"
@@ -1516,7 +1542,10 @@ HP="$T/hold"; rm -rf "$HP"; mkdir -p "$HP/srv/core" "$HP/root/etc/tatami"
 SRVDIR="$HP/srv"; FLOG="$HP/fetch.log"; export SRVDIR FLOG; : > "$FLOG"
 echo "core = https://mirror.test/core" > "$HP/root/etc/tatami/repos.conf"
 printf 'PUBKEY = none\nBULKHEAD = no\nFETCHCMD = sh -c '"'"'cp "$SRVDIR/${0#https://mirror.test/}" "$1"'"'"' %%URL%% %%DEST%%\n' > "$HP/plain.conf"
-{ cat "$HP/plain.conf"; echo "HoldPkg = hp-held"; } > "$HP/hold.conf"
+cp "$HP/plain.conf" "$HP/hold.conf"
+# the held packages are read from <root>/etc/tatami/hold: hold_with <names...> / hold_none
+hold_with() { printf '%s\n' "$@" > "$HP/root/etc/tatami/hold"; }
+hold_none() { rm -f "$HP/root/etc/tatami/hold"; }
 hr() { "$TATAMI" -r "$HP/root" -c "$1" "${@:2}"; }
 mkp "$HP/srv/core" hp-held 1.0 - - usr/share/hp-held/f:one
 mkp "$HP/srv/core" hp-free 1.0 - - usr/share/hp-free/f:one
@@ -1528,8 +1557,9 @@ mkp "$HP/srv/core" hp-held 2.0 - - usr/share/hp-held/f:two
 mkp "$HP/srv/core" hp-free 2.0 - - usr/share/hp-free/f:two
 "$TATAMI" index "$HP/srv/core" >/dev/null
 check "update fetches the new index" 0 hr "$HP/plain.conf" update
+hold_with hp-held
 OUT=$(hr "$HP/hold.conf" -y upgrade 2>&1); rc=$?
-[ $rc -eq 0 ] && ok "the upgrade with HoldPkg works" || bad "upgrade failed ($rc)" "$OUT"
+[ $rc -eq 0 ] && ok "the upgrade with the hold file works" || bad "upgrade failed ($rc)" "$OUT"
 has "the held package is reported" "Skipping upgrade for held package: hp-held \(1.0 -> 2.0\)"
 [ "$(cat "$HP/root/usr/share/hp-held/f")" = one ] && ok "hp-held stays at version 1.0" || bad "held package changed" "$(cat "$HP/root/usr/share/hp-held/f")"
 [ "$(cat "$HP/root/usr/share/hp-free/f")" = two ] && ok "hp-free, not held, was upgraded to 2.0" || bad "free package not upgraded"
@@ -1539,17 +1569,29 @@ has "a second upgrade has nothing to do" "Nothing to do"
 has "and still says why" "Skipping upgrade for held package: hp-held"
 # an explicit request wins over the hold
 check "naming the held package in install upgrades it" 0 hr "$HP/hold.conf" -y install hp-held
-[ "$(cat "$HP/root/usr/share/hp-held/f")" = two ] && ok "explicitly requested: upgraded despite HoldPkg" || bad "explicit install blocked"
+[ "$(cat "$HP/root/usr/share/hp-held/f")" = two ] && ok "explicitly requested: upgraded despite the hold" || bad "explicit install blocked"
 # several names, several lines, a package that is not installed
 mkp "$HP/srv/core" hp-held 3.0 - - usr/share/hp-held/f:three
 mkp "$HP/srv/core" hp-free 3.0 - - usr/share/hp-free/f:three
 "$TATAMI" index "$HP/srv/core" >/dev/null; hr "$HP/plain.conf" update >/dev/null
-{ cat "$HP/plain.conf"; echo "HoldPkg = hp-dep not-installed-anywhere"; echo "HoldPkg = hp-held"; } > "$HP/hold2.conf"
-check "HoldPkg with several names on several lines" 0 hr "$HP/hold2.conf" -y upgrade
+printf '# held\n\n  hp-dep  \nnot-installed-anywhere\n#hp-free\nhp-held\n' > "$HP/root/etc/tatami/hold"
+check "a hold file with comments, blanks, blanks around names and unknown packages" 0 hr "$HP/plain.conf" -y upgrade
 [ "$(cat "$HP/root/usr/share/hp-held/f")" = two ] && [ "$(cat "$HP/root/usr/share/hp-free/f")" = three ] && ok "hp-held held (two), hp-free upgraded (three)" || bad "multi-line hold" "$(cat "$HP/root/usr/share/hp-held/f") $(cat "$HP/root/usr/share/hp-free/f")"
-# without HoldPkg everything is upgraded
-check "no HoldPkg: the same upgrade takes everything" 0 hr "$HP/plain.conf" -y upgrade
+# without a hold file everything is upgraded
+hold_none
+check "no hold file: the same upgrade takes everything" 0 hr "$HP/plain.conf" -y upgrade
 [ "$(cat "$HP/root/usr/share/hp-held/f")" = three ] && ok "hp-held upgraded once it is no longer held" || bad "still held"
+{ cat "$HP/plain.conf"; echo "HoldPkg = hp-held"; } > "$HP/oldhold.conf"
+check "HoldPkg in tatami.conf is refused" 1 hr "$HP/oldhold.conf" list
+has "and points to the hold file" "HoldPkg moved to etc/tatami/hold"
+{ cat "$HP/plain.conf"; echo "UPGRADE ^etc/.*\$ NO"; } > "$HP/oldrule.conf"
+check "a rule in tatami.conf is refused" 1 hr "$HP/oldrule.conf" list
+has "and points to upgrade.rules" "live in etc/tatami/upgrade.rules"
+printf 'UPGRADE ^x NOPE\n' > "$HP/root/etc/tatami/upgrade.rules"
+check "a bad line in upgrade.rules is an error naming the file" 1 hr "$HP/plain.conf" list
+has "with the line" "upgrade.rules:1: 'NOPE' unknown action"
+rm -f "$HP/root/etc/tatami/upgrade.rules"
+check "no upgrade.rules and no hold file: fine" 0 hr "$HP/plain.conf" list
 echo
 
 echo "# package checksums are for remote packages only: local files and file:// repositories skip them"

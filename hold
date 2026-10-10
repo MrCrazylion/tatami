@@ -1,0 +1,7 @@
+# /etc/tatami/hold: packages that are never upgraded (or removed as a side effect)
+# by a transaction. One package name per line; empty lines and # comments are ignored.
+# Naming a held package in 'tatami install' or 'tatami remove' still works: an explicit
+# request wins. 'tatami upgrade' says "Skipping upgrade for held package: name (old -> new)".
+#
+#linux
+#glibc

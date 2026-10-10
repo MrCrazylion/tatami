@@ -522,7 +522,7 @@ vector<string> resolver::held_back() const
 void resolver::make_jobs(Queue* jobs) const
 {
 	queue_init_clone(jobs, &job_);
-	// HoldPkg: libsolv must leave these installed packages exactly as they are
+	// hold file: libsolv must leave these installed packages exactly as they are
 	for (size_t i = 0; i < held_.size(); i++) {
 		const Id p = installed_id(held_[i]);
 		if (p && is_held(held_[i]))

@@ -57,7 +57,8 @@ limits are. It does not describe plans.
 **Dependency resolution** is delegated to libsolv: installed packages form the
 "installed" repository, each configured repository a repo, and a request becomes
 solver jobs. The architecture policy is strict (the target's architecture plus
-`noarch`; `ARCH=x86_64:i686` allows multilib). Removal uses `SOLVER_ERASE` with
+`noarch`). The target architecture is always the machine's, from `uname()`; there is no
+setting and no implicit multilib. Removal uses `SOLVER_ERASE` with
 `SOLVER_CLEANDEPS`, and explicitly installed packages are declared
 `SOLVER_USERINSTALLED`, so unneeded dependencies are removed with the package that
 pulled them in. There is no separate "autoremove" command.
@@ -214,8 +215,8 @@ root, unconfined; package contents are trusted code.
 
 ### `.old` backups of configuration files (Slackware style)
 
-A file that an `UPGRADE ... NO` rule matches is a *configuration file* (the default
-configuration has one rule, `UPGRADE ^etc/.*$ NO`). When an upgrade brings a version
+A file that an `UPGRADE ... NO` rule in `/etc/tatami/upgrade.rules` matches is a
+*configuration file* (the shipped file has one rule, `UPGRADE ^etc/.*$ NO`). When an upgrade brings a version
 that differs from the regular file on disk:
 
 1. the new version is extracted to a temporary name next to it;
@@ -230,9 +231,10 @@ after a commit the `.old` stays. There is no `rejected/` directory and no merge 
 `.old` files belong to no package, so removing a package leaves them. An
 `INSTALL ... NO` rule skips a file entirely.
 
-### `HoldPkg` — version pinning
+### The hold file — version pinning
 
-`HoldPkg = name1 name2 …` in `tatami.conf` (repeatable) pins installed packages. Each
+`/etc/tatami/hold`, one package name per line (`#` comments and blank lines ignored), pins
+installed packages. Each
 one gets a `SOLVER_SOLVABLE | SOLVER_LOCK` job, pushed with the other jobs before
 `solver_solve()`, so libsolv itself keeps the version whatever else is upgraded or
 removed. `tatami upgrade` prints `Skipping upgrade for held package: name (1.0 -> 2.0)`
@@ -242,9 +244,16 @@ with pacman's `IgnorePkg`). Held packages that are not installed are ignored.
 
 ### Where things are configured
 
-- `/etc/tatami/tatami.conf` — settings (`PKG_EXT`, `PKG_COMPRESSION`, `ARCH`,
-  `REPO_DIRS`, `FETCHCMD`, `PUBKEY`, `HoldPkg`, `BULKHEAD`) and the `UPGRADE`/`INSTALL`
-  rules. Missing, empty or unreadable is fine: the built-in defaults apply.
+- `/etc/tatami/tatami.conf` — engine settings only (`PKG_EXT`, `PKG_COMPRESSION`,
+  `FETCHCMD`, `PUBKEY`, `BULKHEAD`, and the `REPO_DIRS` fallback). Missing, empty or
+  unreadable is fine: the built-in defaults apply. The old `ARCH`, `HoldPkg` and rule lines
+  are refused with a message that names their new home.
+- `/etc/tatami/repos.conf`, `repos.d/*.conf` — repository definitions and nothing else
+  (no `FETCHCMD`, no `PUBKEY`: those are engine settings).
+- `/etc/tatami/hold` — held packages, one per line.
+- `/etc/tatami/upgrade.rules` — the `UPGRADE`/`INSTALL` `YES|NO` rules.
+  A missing `hold` or `upgrade.rules` is simply ignored (nothing held, no rule). All of
+  these are looked up inside the `--root`.
 - **Build time.** `build.conf`, provided with the sources, is a template of commented-out
   `KEY=VALUE` lines (`PREFIX`, `SYSCONFDIR`, `DB_DIR`, `CACHEDIR`, `PKG_EXT`,
   `PKG_COMPRESSION`) that the Makefile includes. Nothing in it is active, because an
@@ -271,7 +280,7 @@ version=1.3.2
 release=1
 source=(https://example.org/zlib-$version.tar.gz)
 depends=(libfoo "libbar >= 2.0" "a | b")      # also conflicts, provides, replaces
-arch=noarch                                   # optional; default: ARCH / uname -m
+arch=noarch                                   # optional; default: uname -m
 
 build() {
         cd zlib-$version
@@ -368,7 +377,7 @@ drives `tatami` against scratch roots, and compares complete filesystem snapshot
 before and after failures. It covers:
 
 - naming, all compression formats (read and written with an empty `PATH`), and
-  architecture policy including multilib;
+  architecture policy (a `uname()` shim fakes the host);
 - install reasons and cascading removal;
 - **atomicity:** a failing third package undoes the first two (including an upgrade and
   a replace-removal in the same run); rollback leaves the filesystem byte-for-byte as it
@@ -384,7 +393,7 @@ before and after failures. It covers:
   re-verification, base64 keys, and the local bypass;
 - disk space (an `LD_PRELOAD` shim fakes `statvfs`) and cache cleanup;
 - `.old` backups with and without an earlier `.old`, with rollback and recovery;
-- `HoldPkg`, install scripts, hooks (including failing and malformed ones),
+- the hold file, install scripts, hooks (including failing and malformed ones),
   configuration fallbacks, and shell-injection attempts in URLs.
 
 Mutation checks were used on the security- and safety-critical paths (signature
@@ -405,5 +414,5 @@ actual power-loss test around the database rename; hosts other than `aarch64`.
   that modifies the system does.
 - No key rotation, revocation or signed timestamps; no installed-file verification
   command; no `rejmerge`-style tool for `.old` files; no version-pinning syntax other
-  than `HoldPkg`.
+  than the hold file; no multilib.
 - Not yet validated against real mirrors, a real sandbox, or power loss (see §7).

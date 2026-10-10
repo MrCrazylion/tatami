@@ -144,13 +144,13 @@ int main(int argc, char** argv)
 						      : root_resolve(ctx.opt.root, TATAMI_CONF),
 				      explicit_config);
 
-		ctx.arch = ctx.cfg.arch;
-		if (ctx.arch.empty()) {
-			struct utsname un;
-			if (uname(&un) == -1)
-				throw runtime_error_with_errno("could not determine the machine architecture");
-			ctx.arch = un.machine;
-		}
+		read_hold(root_resolve(ctx.opt.root, HOLD_FILE), ctx.cfg);
+		read_rules(root_resolve(ctx.opt.root, RULES_FILE), ctx.cfg);
+
+		struct utsname un;
+		if (uname(&un) == -1)
+			throw runtime_error_with_errno("could not determine the machine architecture");
+		ctx.arch = un.machine;
 
 		cmd->run(ctx);
 	} catch (runtime_error& e) {

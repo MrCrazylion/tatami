@@ -60,7 +60,7 @@ public:
 	// for any other reason are dependencies.
 	const set<string>& requested_names() const { return requested_; }
 
-	// Installed packages that must stay as they are (HoldPkg): each gets a SOLVER_LOCK
+	// Installed packages that must stay as they are (hold file): each gets a SOLVER_LOCK
 	// job, except those the user names in the very command (an explicit request wins)
 	void set_held(const vector<string>& names) { held_ = names; }
 	// Held packages that are installed and have a newer version available: "name (1.0 -> 2.0)"

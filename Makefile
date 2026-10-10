@@ -322,6 +322,13 @@ install: all
 	else \
 		install -m0644 tatami.conf $(DESTDIR)$(ETCDIR)/tatami/tatami.conf; \
 	fi
+	@for f in hold upgrade.rules; do \
+		if [ -e $(DESTDIR)$(ETCDIR)/tatami/$$f ]; then \
+			echo "keeping existing $(DESTDIR)$(ETCDIR)/tatami/$$f"; \
+		else \
+			install -m0644 $$f $(DESTDIR)$(ETCDIR)/tatami/$$f; \
+		fi; \
+	done
 	@for h in hooks/*.hook; do \
 		if [ -e $(DESTDIR)$(ETCDIR)/tatami/hooks.d/$$(basename $$h) ]; then \
 			echo "keeping existing $(DESTDIR)$(ETCDIR)/tatami/hooks.d/$$(basename $$h)"; \

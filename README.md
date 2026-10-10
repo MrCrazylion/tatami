@@ -138,27 +138,39 @@ All compression formats are read and written by tatami itself.
 
 ### Architecture
 
-```ini
-# Packages for other architectures are refused. The default is the machine's (uname -m).
-ARCH = x86_64
-
-# Multilib: a colon-separated list. tatamk builds for the first entry.
-# ARCH = x86_64:i686
-```
-
-`noarch` packages are accepted everywhere.
+Packages for other architectures are refused. tatami always uses the machine's architecture
+(`uname -m`); there is no setting for it. `noarch` packages are accepted everywhere.
+`tatamk` takes the architecture from `arch=` in the recipe (the machine's if there is none).
 
 ### Other useful settings
 
 ```ini
-# Installed packages that upgrades never touch
-HoldPkg = linux glibc
-
-# Configuration files: a changed one is saved as <file>.old when an upgrade replaces it
-UPGRADE   ^etc/.*$   NO
-
 # How remote files are downloaded (the default)
 FETCHCMD = curl -f -L -# "%URL%" -o "%DEST%"
+```
+
+### One file per job
+
+`tatami.conf` holds the engine settings only: `FETCHCMD`, `PUBKEY`, `PKG_EXT`,
+`PKG_COMPRESSION` and `BULKHEAD`. Everything else has its own plain-text file in
+`/etc/tatami`, and every one of them may be missing:
+
+| File | Content |
+| --- | --- |
+| `repos.conf`, `repos.d/*.conf` | Repository definitions only: `core = https://...`, `local = /srv/packages` |
+| `hold` | Held packages, one name per line (`#` comments allowed) |
+| `upgrade.rules` | `UPGRADE`/`INSTALL` rules: `EVENT  PATTERN  YES\|NO` |
+| `hooks.d/*.hook` | Post-transaction hooks |
+
+```
+# /etc/tatami/hold
+linux
+glibc
+```
+
+```
+# /etc/tatami/upgrade.rules: a changed configuration file is saved as <file>.old
+UPGRADE   ^etc/.*$   NO
 ```
 
 Naming a held package in `tatami install` or `tatami remove` overrides the hold. See

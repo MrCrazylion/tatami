@@ -1,6 +1,6 @@
 .TH TATAMI.CONF 5 "" "tatami"
 .SH NAME
-tatami.conf \- configuration of tatami and tatamk, repository lists and hooks
+tatami.conf \- configuration of tatami and tatamk, held packages, file rules, repository lists and hooks
 .SH DESCRIPTION
 .B tatami.conf
 configures
@@ -33,8 +33,18 @@ are ignored.
 A setting is
 .IB NAME " = " value
 with optional blanks around the equals sign; the value may be quoted.
-A line that is not a setting is a rule (see below).
 An unknown setting or a malformed line is an error that names the file and the line.
+.PP
+.B tatami.conf
+holds the engine settings only.
+Held packages, file rules and repositories each have their own file in
+.BR /etc/tatami ,
+described below; each of them may be missing.
+The former settings
+.B ARCH
+and
+.BR HoldPkg ,
+and rule lines, are refused with a message naming the new place.
 .SH SETTINGS
 .TP
 .B PKG_EXT
@@ -64,18 +74,6 @@ or
 The default is the one chosen when tatami was built
 .RB ( zst
 unless changed).
-.TP
-.B ARCH
-Architecture of the target system; the default is
-.BR "uname \-m" .
-Packages of any other architecture are refused;
-.B noarch
-packages always fit.
-A colon\-separated list, such as
-.BR x86_64:i686 ,
-allows more (multilib).
-.BR tatamk
-builds for the first entry.
 .TP
 .B REPO_DIRS
 Repositories as paths or URLs separated by blanks, used when no
@@ -124,22 +122,6 @@ remote repositories are refused;
 .B PUBKEY = none
 accepts unsigned remote data (the SHA\-256 checksums of the index are still checked).
 .TP
-.B HoldPkg
-Space\-separated names of installed packages that are never upgraded or removed as a
-side effect by a transaction.
-They are handed to the solver as locked, and
-.B tatami upgrade
-prints
-.B Skipping upgrade for held package: \fIname\fB (\fIold\fB \-> \fInew\fB)
-for each one that has a newer version.
-The setting may be repeated and the names add up.
-A package named in the
-.B install
-or
-.B remove
-command itself is not held for that command:
-an explicit request wins.
-.TP
 .B BULKHEAD
 .B yes
 (the default) or
@@ -149,9 +131,41 @@ whether
 builds in a
 .BR bwrap (1)
 sandbox.
+.SH ARCHITECTURE
+There is no setting for it: tatami uses the machine architecture
+.RB ( "uname \-m" ).
+Packages of any other architecture are refused;
+.B noarch
+packages always fit.
+.BR tatamk
+takes the architecture from
+.B arch=
+in the recipe, or the machine's if the recipe has none.
+.SH HELD PACKAGES
+.B /etc/tatami/hold
+lists installed packages that are never upgraded or removed as a side effect by a
+transaction, one name per line.
+Empty lines and lines starting with
+.B #
+are ignored.
+They are handed to the solver as locked, and
+.B tatami upgrade
+prints
+.B Skipping upgrade for held package: \fIname\fB (\fIold\fB \-> \fInew\fB)
+for each one that has a newer version.
+A package named in the
+.B install
+or
+.B remove
+command itself is not held for that command:
+an explicit request wins.
 .SH RULES
-.IB EVENT " " pattern " " ACTION
+.B /etc/tatami/upgrade.rules
+has one rule per line (empty lines and
+.B #
+lines are ignored):
 .PP
+.IB EVENT " " pattern " " ACTION
 .I EVENT
 is
 .B UPGRADE
@@ -183,7 +197,7 @@ A rollback puts the original back.
 .B INSTALL ... NO
 The file is not installed at all.
 .PP
-The default configuration has one rule:
+The shipped file has one rule:
 .PP
 .RS
 .B UPGRADE ^etc/.*$ NO
@@ -288,18 +302,35 @@ when libraries change.
 .B /etc/tatami/tatami.conf
 This file.
 .TP
+.B /etc/tatami/hold
+Held packages.
+.TP
+.B /etc/tatami/upgrade.rules
+File rules.
+.TP
 .B /etc/tatami/repos.conf, /etc/tatami/repos.d/*.conf
-Repository lists.
+Repository lists (definitions only).
 .TP
 .B /etc/tatami/hooks.d/*.hook
 Hooks.
 .SH EXAMPLE
 .nf
 PUBKEY      = 05ad836299e2a530bbffd0b4da78f6bc88189250b32c654c4ef8db13ea09e3be
-HoldPkg     = linux glibc
-ARCH        = x86_64
 PKG_COMPRESSION = zst
-
+.fi
+.PP
+in
+.BR /etc/tatami/hold :
+.PP
+.nf
+linux
+glibc
+.fi
+.PP
+in
+.BR /etc/tatami/upgrade.rules :
+.PP
+.nf
 UPGRADE     ^etc/.*$     NO
 .fi
 .PP

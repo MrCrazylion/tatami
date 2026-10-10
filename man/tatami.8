@@ -73,7 +73,7 @@ There is no separate autoremove command.
 .B upgrade
 Upgrade all installed packages that have a newer version available.
 Packages named in
-.B HoldPkg
+.B /etc/tatami/hold
 are skipped, each with a notice.
 .TP
 .BI search " regex"
@@ -205,7 +205,9 @@ otherwise it is rolled back.
 A file that an
 .B UPGRADE
 rule of
-.BR tatami.conf (5)
+.B /etc/tatami/upgrade.rules
+(see
+.BR tatami.conf (5))
 says
 .B NO
 to is treated as a configuration file (by default everything below
@@ -303,6 +305,9 @@ See
 .TP
 .B /etc/tatami/tatami.conf
 Configuration.
+.TP
+.B /etc/tatami/hold, /etc/tatami/upgrade.rules
+Held packages and file rules.
 .TP
 .B /etc/tatami/repos.conf, /etc/tatami/repos.d/*.conf
 Repositories.

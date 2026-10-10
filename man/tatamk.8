@@ -51,12 +51,9 @@ Arrays of relations, one per element:
 An element may not contain a comma.
 .TP
 .B arch
-Optional. The default is the first architecture of
-.B ARCH
-in
-.BR tatami.conf (5)
-or else the output of
+Optional. The default is the output of
 .BR "uname \-m" .
+The architecture is never taken from the configuration.
 .BR noarch ,
 .B all
 and
@@ -229,8 +226,7 @@ Optional checksums of the sources.
 .B /etc/tatami/tatami.conf
 Configuration (the keys
 .BR PKG_EXT ,
-.BR PKG_COMPRESSION ,
-.BR ARCH
+.BR PKG_COMPRESSION
 and
 .BR BULKHEAD
 are used).

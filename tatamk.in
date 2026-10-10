@@ -150,9 +150,7 @@ if [ "$BULKHEAD" = yes ]; then
 	command -v bwrap >/dev/null 2>&1 || die "isolated builds require bwrap (bubblewrap), which was not found in PATH.
          Install bubblewrap, or build without isolation using --no-bulkhead (or BULKHEAD=no in tatami.conf)."
 fi
-ARCH=$(conf_get ARCH)
-ARCH="${ARCH%%:*}"             # ARCH may list several (x86_64:i686): the first is the primary one
-[ -n "$ARCH" ] || ARCH=$(uname -m)
+ARCH=$(uname -m)               # only used when the recipe has no arch=
 
 RECIPE_DIR=$(cd "$(dirname "$RECIPE")" && pwd) || die "cannot enter recipe directory"
 RECIPE_FILE="$RECIPE_DIR/$(basename "$RECIPE")"

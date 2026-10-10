@@ -417,7 +417,7 @@ void run_transaction(const context& ctx, session& s, const char* verb,
 		throw runtime_error("unmet dependencies");
 	}
 
-	// HoldPkg: tell what an upgrade leaves alone
+	// hold file: tell what an upgrade leaves alone
 	if (string(verb) == "upgrade") {
 		const vector<string> held = s.res->held_back();
 		for (size_t i = 0; i < held.size(); i++)

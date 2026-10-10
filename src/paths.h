@@ -27,6 +27,8 @@
 #define DEFAULT_REPO_REL STATE_DIR "/packages"           // repository used when none is configured
 
 #define TATAMI_ETC      TATAMI_SYSCONFDIR "/tatami"
+#define HOLD_FILE       TATAMI_ETC "/hold"               // one package name per line
+#define RULES_FILE      TATAMI_ETC "/upgrade.rules"      // UPGRADE/INSTALL YES|NO rules
 #define REPOS_CONF      TATAMI_ETC "/repos.conf"         // name=url lines
 #define REPOS_DIR       TATAMI_ETC "/repos.d"            // *.conf files of the same form
 #define REPO_CACHE      STATE_DIR "/repos"               // downloaded indexes: <name>/repo.solv

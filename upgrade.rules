@@ -1,0 +1,17 @@
+# /etc/tatami/upgrade.rules: what happens to files that already exist when a package is
+# installed or upgraded, as in pkgutils' pkgadd.conf:
+#
+#   EVENT  PATTERN  ACTION
+#
+# EVENT is UPGRADE or INSTALL, PATTERN a POSIX extended regular expression matched
+# against the file's path relative to the root (no leading slash), ACTION is YES or NO.
+# The last matching rule wins; a file that no rule matches is YES.
+#
+# A file an UPGRADE rule says NO to is a configuration file: when an upgrade brings a
+# different version of it, the new one is installed and the existing file is renamed to
+# <file>.old (an identical one is left alone; a previous .old file is replaced).
+# An INSTALL rule saying NO skips the file entirely.
+
+#UPGRADE	^.*$			YES
+
+UPGRADE		^etc/.*$		NO

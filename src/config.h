@@ -40,20 +40,24 @@ struct rule_t {
 struct config_t {
 	string pkg_ext;                 // without leading dot, empty: tar.<compression>
 	vector<string> repo_dirs;       // directories scanned by 'tatami update'
-	vector<string> hold_pkgs;       // HoldPkg: installed packages that are never upgraded or removed by a transaction
+	vector<string> hold_pkgs;       // etc/tatami/hold: installed packages that are never upgraded or removed by a transaction
 	string fetchcmd;                // downloads remote repositories (FETCHCMD)
 	string pubkey;                  // PUBKEY: Ed25519 public key (hex or base64), or "none"
 	bool have_pubkey;               // pubkey_bytes is valid
 	unsigned char pubkey_bytes[32];
-	string arch;                    // empty: use the machine architecture
 	string bulkhead;                // tatamk only: "yes" or "no" (build isolation)
 	string compression;             // used by tatamk only: gz, xz, zst, bz2 or none
-	vector<rule_t> rules;           // UPGRADE/INSTALL rules (as in pkgadd.conf)
+	vector<rule_t> rules;           // etc/tatami/upgrade.rules: UPGRADE/INSTALL rules
 };
 
 config_t default_config();
 
 // Reads a configuration file. A missing file is only an error if 'required'.
 config_t read_config(const string& filename, bool required);
+
+// Fill cfg.hold_pkgs from the hold file (one package name per line) and
+// cfg.rules from the rules file. A file that does not exist is ignored.
+void read_hold(const string& filename, config_t& cfg);
+void read_rules(const string& filename, config_t& cfg);
 
 #endif /* CONFIG_H */
