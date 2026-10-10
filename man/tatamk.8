@@ -16,9 +16,9 @@ The recipe format is that of the pkgutils
 with real dependency fields.
 .PP
 The package is named
-.IB name _ version [\- release ]_ arch .tar. compression
+.IB name _ version [\- release ]_ arch . extension
 for example
-.BR zlib_1.3.2\-1_x86_64.tar.zst ,
+.BR zlib_1.3.2\-1_x86_64.tar.pkg ,
 and is written to the output directory.
 .SH THE TATAMIFILE
 The recipe is a bash fragment.
@@ -207,8 +207,9 @@ The tatami binary used for packing, indexing, signing and the sandbox
 The signing key.
 .TP
 .B PKG_EXT
-Use this package extension instead of
-.BR tar.\fIcompression\fR .
+Use this package extension instead of the configured one
+(default
+.BR tar.pkg ).
 .SH FILES
 .TP
 .B Tatamifile

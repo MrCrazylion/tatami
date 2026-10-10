@@ -99,15 +99,17 @@ optional: if it is missing or empty, tatami uses its built-in defaults. Lines ha
 ### Package format
 
 Packages are named `<name>_<version>-<release>_<arch>.<extension>`, for example
-`zlib_1.3.2-1_x86_64.tar.zst`.
+`zlib_1.3.2-1_x86_64.tar.pkg`. The default extension is `tar.pkg`; the compression inside
+is detected from the content, so it does not appear in the name.
 
 ```ini
 # Compression used by tatamk: gz, zst (default), xz, bz2, lz4, lzma or none.
 PKG_COMPRESSION = zst
 
-# Optional: accept and produce exactly this extension.
-# By default the extension is tar.<compression> and every compression is accepted.
-PKG_EXT = tar.zst
+# The package file extension (default: tar.pkg). The compression inside is detected
+# from the content. An empty value ("PKG_EXT =") means tar.<compression> instead
+# (tar.zst, tar.xz, ...), and every compression is then accepted.
+PKG_EXT = tar.pkg
 ```
 
 All compression formats are read and written by tatami itself.
@@ -231,23 +233,8 @@ build() {
 ```
 
 `build()` runs in the unpacked sources (`$SRC`) and must install everything into `$PKG`. A real
-recipe lists `source=(...)` and `depends=(...)` and typically ends with
-`make DESTDIR=$PKG install`:
-
-```bash
-# Description: Compression library
-name=zlib
-version=1.3.2
-release=1
-source=(https://zlib.net/zlib-$version.tar.gz)
-
-build() {
-        cd zlib-$version
-        ./configure --prefix=/usr
-        make
-        make DESTDIR=$PKG install
-}
-```
+recipe also lists `source=(...)` and `depends=(...)` and typically ends with
+`make DESTDIR=$PKG install`.
 
 Build it into your local repository (run it as a user who may write to that directory, or
 build into another directory and list it in `repos.conf`):
@@ -257,8 +244,8 @@ tatamk -o /var/lib/tatami/packages
 ```
 
 ```
-=======> Creating hello_1.0-1_x86_64.tar.zst
-=======> Built /var/lib/tatami/packages/hello_1.0-1_x86_64.tar.zst
+=======> Creating hello_1.0-1_x86_64.tar.pkg
+=======> Built /var/lib/tatami/packages/hello_1.0-1_x86_64.tar.pkg
 ```
 
 The build runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox: the
@@ -298,7 +285,7 @@ sudo tatami remove hello        # remove it, with dependencies nobody needs any 
 
 Add `-s` to any command to see what would be done without changing anything, `-y` to skip the
 confirmation, and `-r <dir>` to work in another root. A package file can be installed
-directly with `sudo tatami install ./hello_1.0-1_x86_64.tar.zst`.
+directly with `sudo tatami install ./hello_1.0-1_x86_64.tar.pkg`.
 
 ## More information
 

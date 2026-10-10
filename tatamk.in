@@ -24,7 +24,7 @@
 #    }
 #
 #  $SRC is the unpacked source directory, $PKG the package root. The result is
-#  <name>_<version>-<release>_<arch>.tar.<compression>, e.g. zlib_1.3.2-1_x86_64.tar.zst
+#  <name>_<version>-<release>_<arch>.<extension>, by default tar.pkg: zlib_1.3.2-1_x86_64.tar.pkg
 #
 
 TATAMI_CONF="@SYSCONFDIR@/tatami/tatami.conf"   # build-time SYSCONFDIR
@@ -49,7 +49,7 @@ print_help() {
 	echo "      --no-sign         do not sign the package even if a signing key exists"
 	echo "  -v, --version         print version and exit"
 	echo "packages are named <name>_<version>-<release>_<arch>.<extension>; the extension is"
-	echo "tar.<compression> unless PKG_EXT is set (default '@DEFAULT_PKG_EXT@', then the configuration"
+	echo "tar.<compression> if PKG_EXT is empty (default '@DEFAULT_PKG_EXT@', then the configuration"
 	echo "file, then the PKG_EXT environment variable)"
 	echo "  -h, --help            print help and exit"
 	echo "signing: if \$TATAMI_PRIVKEY or ~/.tatami/privkey exists (see 'tatami keygen'), the"
@@ -102,8 +102,11 @@ done
 [ -r "$RECIPE" ] || die "recipe '$RECIPE' not found"
 
 # Package extension: build-time default, then tatami.conf, then the environment
-v=$(conf_get PKG_EXT)
-[ -n "$v" ] && PKG_EXT="${v#.}"
+# (an explicit empty "PKG_EXT =" in the configuration selects tar.<compression>)
+if [ -r "$TATAMI_CONF" ] && grep -q '^PKG_EXT[[:space:]]*=' "$TATAMI_CONF"; then
+	v=$(conf_get PKG_EXT)
+	PKG_EXT="${v#.}"
+fi
 [ -n "$ENV_PKG_EXT" ] && PKG_EXT="${ENV_PKG_EXT#.}"
 case "$PKG_EXT" in
 *[!A-Za-z0-9._-]*) die "invalid PKG_EXT '$PKG_EXT'" ;;

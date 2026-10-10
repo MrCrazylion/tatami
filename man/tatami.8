@@ -27,9 +27,14 @@ program is needed to handle any of the supported compression formats (gzip, zstd
 xz, lzma, bzip2, lz4).
 .PP
 Packages are named
-.IB name _ version [\- release ]_ arch .tar. compression
+.IB name _ version [\- release ]_ arch . extension
 for example
-.BR zlib_1.3.2\-1_x86_64.tar.zst .
+.BR zlib_1.3.2\-1_x86_64.tar.pkg .
+The extension is
+.B tar.pkg
+by default (see
+.BR tatami.conf (5));
+the compression inside is detected from the content.
 Everything tatami reads or writes is below the installation root
 .RB ( \-\-root ),
 which is

@@ -39,14 +39,15 @@ RT_CACHEDIR = $(call rel,$(CACHEDIR))
 VERSION = 0.1.0
 NAME = tatami-$(VERSION)
 
-# Packages are named <name>_<version>_<arch>.<extension>. By default the
-# extension is tar.<compression> (tar.zst, tar.xz, ...) and tatami accepts all of
-# them. A distribution can fix one extension for both tools instead:
+# Packages are named <name>_<version>-<release>_<arch>.<extension>. The default
+# extension is tar.pkg (set in config.mk; the compression inside is detected from the
+# content). An empty PKG_EXT means tar.<compression> (tar.zst, tar.xz, ...), all of
+# which tatami then accepts. Another extension for both tools:
 #   make PKG_EXT=myext
 # tatami gets it as -DDEFAULT_PKG_EXT, tatamk as the @DEFAULT_PKG_EXT@ substitution.
 # It can still be overridden when running: PKG_EXT in /etc/tatami/tatami.conf (both
 # tools) and, for tatamk only, the PKG_EXT environment variable.
-PKG_EXT ?=
+PKG_EXT ?= tar.pkg
 ifneq ($(shell printf '%s' '$(PKG_EXT)' | tr -d 'A-Za-z0-9._-'),)
 $(error PKG_EXT may only contain letters, digits, '.', '_' and '-')
 endif

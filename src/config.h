@@ -11,9 +11,10 @@ using namespace std;
 // through PKG_EXT in tatami.conf. Every place that checks or strips the
 // extension uses config_t::pkg_ext, which starts out as this value.
 //
-// Empty (the default) means: tar.<compression>, whatever the compression is.
+// The default is tar.pkg. Empty means: tar.<compression>, whatever the compression is
+// (every compression is then accepted).
 #ifndef DEFAULT_PKG_EXT
-#define DEFAULT_PKG_EXT         ""
+#define DEFAULT_PKG_EXT         "tar.pkg"
 #endif
 // Inside the root, e.g. <root>/etc/tatami/tatami.conf; SYSCONFDIR can be changed at build time
 #include "paths.h"

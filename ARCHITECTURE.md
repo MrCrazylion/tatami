@@ -186,7 +186,7 @@ file is stored in the cache under its final name or installed.
 ### The local bypass
 
 Local sources are trusted. A package file given on the command line
-(`tatami install ./pkg.tar.zst`), a repository given as a path, and a `file://`
+(`tatami install ./pkg.tar.pkg`), a repository given as a path, and a `file://`
 repository are **never** checked for a signature or a checksum, never start `FETCHCMD`,
 and need no key. This is not a flag: the verification code simply exists only on the
 remote fetch path.
@@ -274,8 +274,8 @@ build() {
 }
 ```
 
-The result is `<name>_<version>-<release>_<arch>.tar.<compression>`, for example
-`zlib_1.3.2-1_x86_64.tar.zst`. Names and versions may not contain `_`, so the first two
+The result is `<name>_<version>-<release>_<arch>.<extension>`, by default `tar.pkg` (the compression inside is detected from the content; an empty `PKG_EXT` gives `tar.<compression>` instead), for example
+`zlib_1.3.2-1_x86_64.tar.pkg`. Names and versions may not contain `_`, so the first two
 underscores are the separators. Sources are downloaded next to the recipe, checked
 against `.md5sum` if present, and unpacked. **Packing is done by `tatami pack`
 (libarchive)**, not by host `tar`: gzip, zstd (the default), xz, lzma, bzip2, lz4 or

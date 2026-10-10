@@ -38,11 +38,17 @@ An unknown setting or a malformed line is an error that names the file and the l
 .SH SETTINGS
 .TP
 .B PKG_EXT
-A fixed package extension without the leading dot, for example
+The package file extension, without the leading dot.
+The default is
 .BR tar.pkg .
-By default packages are named
-.B \&.tar.\fIcompression\fR
-and every compression is accepted.
+The compression inside a package is detected from its content, so it does not matter.
+An empty value
+.RB ( "PKG_EXT =" )
+selects
+.B tar.\fIcompression\fR
+(such as
+.BR tar.zst )
+instead, and every compression is then accepted.
 .TP
 .B PKG_COMPRESSION
 .BR tatamk 's

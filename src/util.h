@@ -33,13 +33,13 @@ bool ends_with(const string& s, const string& suffix);
 string itos(unsigned long long value);
 
 // The extensions a package file may have. If one was configured (PKG_EXT) it is
-// the only one; otherwise every tar.<compression> tatami can read.
+// the only one; if it is empty, every tar.<compression> tatami can read.
 vector<string> package_extensions(const string& configured);
 bool has_package_extension(const string& filename, const vector<string>& exts);
 
 // Splits "<dir>/<name>_<version>_<arch>.<ext>" into its parts. Names and
 // versions may not contain '_' (an architecture may: x86_64), so the first two
-// underscores are the separators: libfoo-dev_2.0-1_x86_64.tar.zst is name
+// underscores are the separators: libfoo-dev_2.0-1_x86_64.tar.pkg is name
 // "libfoo-dev", version "2.0-1", architecture "x86_64". Returns false if the
 // file name does not have that form.
 bool split_package_filename(const string& filename, const vector<string>& exts,

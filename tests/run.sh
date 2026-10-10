@@ -435,6 +435,7 @@ check "noarch installs when the host architecture is unknown to libsolv" 0 bash 
 echo "# package names: <name>_<version>-<release>_<arch>.tar.<compression>, or a fixed extension"
 DEFEXT=$(sed -n 's/^PKG_EXT="\([^"]*\)".*/\1/p' "$TATAMK" | head -1)      # empty unless built with make PKG_EXT=...
 [ "$DEFEXT" != "@DEFAULT_PKG_EXT@" ] && ok "the build-time extension was substituted in tatamk (${DEFEXT:-automatic})" || bad "default extension not substituted in tatamk" "$DEFEXT"
+[ "$DEFEXT" = tar.pkg ] && ok "the default extension is tar.pkg" || bad "default extension is not tar.pkg" "$DEFEXT"
 [ "$DEFEXT" != "$EXT" ] && ok "the suite's configured extension differs from the build default" || bad "test extension equals the default"
 EXPECT="${DEFEXT:-tar.zst}"
 mkdir -p "$T/extrepo" "$T/recipes/ext1"
@@ -445,15 +446,20 @@ check "tatamk without PKG_EXT in the config names the package by the default" 0 
 check "tatami without PKG_EXT in the config recognises that name" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" index "$T/extrepo"
 has "tatami found the default-named package" "1 package"
 hasnt "no naming warning" "named differently"
-if [ -z "$DEFEXT" ]; then
+# an explicit empty "PKG_EXT =" selects tar.<compression> (every compression is accepted)
+printf 'PKG_EXT =\nREPO_DIRS = %s\nBULKHEAD = no\n' "$T/extrepo" > "$T/auto.conf"
+rm -f "$T/extrepo"/ext1_*
+check "PKG_EXT = (empty) names the package by its compression" 0 "$TATAMK" -c "$T/auto.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+[ -f "$T/extrepo/ext1_1-3_${HARCH}.tar.zst" ] && ok "default compression zstd: ext1_1-3_${HARCH}.tar.zst" || bad "automatic name missing" "$(ls "$T/extrepo")"
+if true; then
 	for c in xz gz bz2 lz4 lzma; do
-		check "tatamk -z $c names the package tar.$c" 0 "$TATAMK" -z $c -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+		check "tatamk -z $c names the package tar.$c" 0 "$TATAMK" -z $c -c "$T/auto.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 		[ -f "$T/extrepo/ext1_1-3_${HARCH}.tar.$c" ] && ok "ext1_1-3_${HARCH}.tar.$c exists" || bad "tar.$c package missing" "$(ls "$T/extrepo")"
 	done
-	check "tatamk -z none names it .tar" 0 "$TATAMK" -z none -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+	check "tatamk -z none names it .tar" 0 "$TATAMK" -z none -c "$T/auto.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 	[ -f "$T/extrepo/ext1_1-3_${HARCH}.tar" ] && ok "uncompressed package is ext1_1-3_${HARCH}.tar" || bad "plain tar package missing"
-	check "tatamk refuses an unknown compression" 1 "$TATAMK" -z rot13 -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
-	check "tatami indexes every tar.<compression> in one repository" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" index "$T/extrepo"
+	check "tatamk refuses an unknown compression" 1 "$TATAMK" -z rot13 -c "$T/auto.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+	check "tatami indexes every tar.<compression> in one repository" 0 "$TATAMI" -r "$ROOT" -c "$T/auto.conf" index "$T/extrepo"
 	has "the same package in several formats is indexed once" "Indexed 1 package "
 	has "and the extra copies are reported" "ext1 1-3 is already in the repository"
 fi
@@ -904,14 +910,14 @@ check "tatami index without an argument fails" 1 "$TATAMI" index
 # the index is used as it is when it is not older than the packages: with a garbage package file the
 # scanner would skip it, only the index still knows it
 cp "$RP/a/repo.solv" "$RP/repo.solv.saved"
-rm -f "$RP"/a/rp-two_1.0*; echo garbage > "$RP/a/rp-two_1.0_garbage.tar.gz"; touch -d '2000-01-01' "$RP/a"
+rm -f "$RP"/a/rp-two_1.0*; echo garbage > "$RP/a/rp-two_1.0_garbage.tar.pkg"; touch -d '2000-01-01' "$RP/a"
 check "a fresh repo.solv is trusted (dependencies come from the index)" 0 tr a show rp-one
 has "the dependency is known from the index" "^Depends: rp-two >= 1.0"
 has "so are file name and size" "^Filename: .*/a/rp-one_1.0_"
 check "the index knows the dependency package too" 0 tr a show rp-two
 check "installing fails cleanly when the indexed file is not what it claims" 1 tr a -y install rp-one
 hasnt "and nothing was half-installed" "Installing"
-rm -f "$RP/a/rp-two_1.0_garbage.tar.gz"
+rm -f "$RP/a/rp-two_1.0_garbage.tar.pkg"
 mkp "$RP/a" rp-two 1.0 - - usr/share/rp-two/f:two
 check "re-indexing after the repair" 0 "$TATAMI" index "$RP/a"
 # stale index: a package added after the index was written is still found, with a hint
@@ -980,8 +986,8 @@ arch_try aarch64 ar-needs; [ $rc -eq 0 ] && exists "while on aarch64 it resolves
 mkdir -p "$AR/recipe"; printf 'name=ar-default\nversion=1\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$AR/recipe/Tatamifile"
 printf 'ARCH = riscv64:foo\nBULKHEAD = no\nPKG_COMPRESSION = gz\n' > "$AR/mk.conf"
 check "tatamk builds for the configured target architecture" 0 "$TATAMK" -c "$AR/mk.conf" -f "$AR/recipe/Tatamifile" -o "$AR/out"
-[ -f "$AR/out/ar-default_1_riscv64.tar.gz" ] && ok "ar-default_1_riscv64.tar.gz" || bad "arch in file name" "$(ls "$AR/out")"
-check "tatami read the architecture back" 0 "$TATAMI" -c "$AR/mk.conf" files "$AR/out/ar-default_1_riscv64.tar.gz"
+[ -f "$AR/out/ar-default_1_riscv64.tar.pkg" ] && ok "ar-default_1_riscv64.tar.pkg" || bad "arch in file name" "$(ls "$AR/out")"
+check "tatami read the architecture back" 0 "$TATAMI" -c "$AR/mk.conf" files "$AR/out/ar-default_1_riscv64.tar.pkg"
 ROOT="$ROOT_MAIN"
 
 echo "# --root: nothing outside the root is touched (usr-merged root with an ABSOLUTE link /lib -> /usr/lib)"
@@ -1323,7 +1329,7 @@ version=1.0
 build() { mkdir -p $PKG/usr/share/sg-app; echo signed > $PKG/usr/share/sg-app/f; }
 RCP
 ( cd "$SG" && HOME="$SG/home" "$TATAMK" -c "$TCONF" -f "$SG/Tatamifile" -o "$SG/srv/core" ) > "$SG/mk.log" 2>&1
-P="sg-app_1.0_${HARCH}.tar.gz"
+P="sg-app_1.0_${HARCH}.tar.pkg"
 [ -f "$SG/srv/core/$P.sig" ] && [ -f "$SG/srv/core/repo.solv" ] && [ -f "$SG/srv/core/repo.solv.sig" ] && ok "tatamk (with ~/.tatami/privkey) left the package, repo.solv and both .sig files" || bad "tatamk did not sign" "$(cat "$SG/mk.log"; ls "$SG/srv/core")"
 ( cd "$SG" && HOME="$SG/nohome" "$TATAMK" -c "$TCONF" -f "$SG/Tatamifile" -o "$SG/unsigned" ) > "$SG/mk2.log" 2>&1
 [ -f "$SG/unsigned/$P" ] && [ ! -e "$SG/unsigned/$P.sig" ] && [ ! -e "$SG/unsigned/repo.solv" ] && ok "without a key tatamk builds as before, unsigned" || bad "unsigned build" "$(cat "$SG/mk2.log")"
@@ -1439,7 +1445,7 @@ post_install() { echo "post a $1 file_there=$([ -e "$TATAMI_ROOT/usr/share/ins-a
 post_remove() { echo "post_remove a" >> "$ILOG"; }
 pre_remove() { echo "pre_remove a" >> "$ILOG"; }'
 mki ins-plain 1.0 -
-PK="$IS/repo/ins-a_1.0_${HARCH}.tar.gz"; PP="$IS/repo/ins-plain_1.0_${HARCH}.tar.gz"
+PK="$IS/repo/ins-a_1.0_${HARCH}.tar.pkg"; PP="$IS/repo/ins-plain_1.0_${HARCH}.tar.pkg"
 members() { python3 -c "import tarfile,sys; print(' '.join(m.name.removeprefix('./') for m in tarfile.open(sys.argv[1])))" "$1"; }
 members "$PK" | grep -qw '\.INSTALL' && ok "tatamk found tatami.install next to the Tatamifile and bundled it as .INSTALL" || bad "no .INSTALL in the package" "$(members "$PK")"
 [ "$(python3 -c "import tarfile,sys; t=tarfile.open(sys.argv[1]); print(t.extractfile('.INSTALL').read().decode().count('pre_install'))" "$PK")" = 1 ] && ok "with the script's content" || bad ".INSTALL content"
@@ -1467,7 +1473,7 @@ mki ins-bad 1.0 'pre_install() { echo "pre bad" >> "$ILOG"; exit 1; }
 post_install() { echo "post bad (must not run)" >> "$ILOG"; }'
 ROOT="$IS/root"; IR remove ins-plain >/dev/null 2>&1; : > "$ILOG"
 before=$(snap)
-check "pre_install exits 1: the transaction is refused" 1 IR install "$IS/repo/ins-ok_1.0_${HARCH}.tar.gz" "$IS/repo/ins-bad_1.0_${HARCH}.tar.gz"
+check "pre_install exits 1: the transaction is refused" 1 IR install "$IS/repo/ins-ok_1.0_${HARCH}.tar.pkg" "$IS/repo/ins-bad_1.0_${HARCH}.tar.pkg"
 has "it says which" "pre_install of ins-bad failed"
 has "and that it rolled back" "the transaction failed, nothing was changed"
 [ "$before" = "$(snap)" ] && ok "rolled back: ins-ok, extracted or not, is gone too, the filesystem is as before" || bad "state differs" "$(diff <(echo "$before") <(echo "$(snap)") | head -6)"
@@ -1478,7 +1484,7 @@ ROOT="$ROOT_MAIN"
 
 # a failing post_install is only a warning: the files are committed
 mki ins-post 1.0 'post_install() { echo "post fails" >> "$ILOG"; return 3; }'
-check "post_install exits non-zero: still succeeds" 0 IR install "$IS/repo/ins-post_1.0_${HARCH}.tar.gz"
+check "post_install exits non-zero: still succeeds" 0 IR install "$IS/repo/ins-post_1.0_${HARCH}.tar.pkg"
 has "with a warning" "warning: post_install of ins-post failed"
 [ -f "$IS/root/usr/share/ins-post/f" ] && IR list 2>&1 | grep -q "^ins-post/1.0" && ok "the package stays installed" || bad "rolled back by mistake"
 
@@ -1487,7 +1493,7 @@ mki ins-a 2.0 'pre_install() { echo "pre a $1" >> "$ILOG"; }
 post_install() { echo "post a $1" >> "$ILOG"; }'
 check "install ins-a 1.0 again, then upgrade" 0 IR install "$PK"
 : > "$ILOG"
-check "upgrade to 2.0" 0 IR install "$IS/repo/ins-a_2.0_${HARCH}.tar.gz"
+check "upgrade to 2.0" 0 IR install "$IS/repo/ins-a_2.0_${HARCH}.tar.pkg"
 [ "$(cat "$ILOG")" = "pre a 2.0
 post a 2.0" ] && ok "pre_install and post_install of the new version ran with 2.0" || bad "upgrade scripts" "$(cat "$ILOG")"
 echo
@@ -1538,7 +1544,7 @@ LC="$T/chk"; rm -rf "$LC"; mkdir -p "$LC/repo" "$LC/other" "$LC/root/etc/tatami"
 mkp "$LC/repo" ck-app 1.0 - - usr/share/ck-app/f:original
 mkp "$LC/other" ck-app 1.0 - - usr/share/ck-app/f:substituted
 "$TATAMI" index "$LC/repo" >/dev/null
-CP="ck-app_1.0_${HARCH}.tar.gz"
+CP="ck-app_1.0_${HARCH}.tar.pkg"
 cp "$LC/other/$CP" "$LC/repo/$CP"       # same name and version, other content: the index's SHA-256 is now wrong
 printf 'BULKHEAD = no\nPUBKEY = none\n' > "$LC/c.conf"
 echo "mine = file://$LC/repo" > "$LC/root/etc/tatami/repos.conf"
@@ -1580,8 +1586,8 @@ DF="$T/defaults"; rm -rf "$DF"; mkdir -p "$DF/recipe" "$DF/out" "$DF/root"
 printf 'name=dflt\nversion=1.0\nbuild() { mkdir -p "$PKG/usr/bin"; echo hi > "$PKG/usr/bin/dflt"; }\n' > "$DF/recipe/Tatamifile"
 # no config file (-c points nowhere), no PKG_EXT, no compression, no arch in the recipe
 ( cd "$DF/recipe" && env -u PKG_EXT "$TATAMK" -c "$DF/none.conf" --no-bulkhead -o "$DF/out" ) >"$DF/mk.log" 2>&1
-[ -f "$DF/out/dflt_1.0_$HARCH.tar.zst" ] && ok "default package is <name>_<version>_<uname -m>.tar.zst" || bad "default package name"
-check "tatami reads the unconfigured package" 0 bash -c "'$TATAMI' -r '$DF/root' -c '$DF/none.conf' show '$DF/out/dflt_1.0_$HARCH.tar.zst' >/dev/null || true"
+[ -f "$DF/out/dflt_1.0_$HARCH.tar.pkg" ] && ok "default package is <name>_<version>_<uname -m>.tar.pkg" || bad "default package name"
+check "tatami reads the unconfigured package" 0 bash -c "'$TATAMI' -r '$DF/root' -c '$DF/none.conf' show '$DF/out/dflt_1.0_$HARCH.tar.pkg' >/dev/null || true"
 mkdir -p "$DF/root/etc/tatami"
 # default config missing, empty, unreadable -> internal defaults, default repository <root>/var/lib/tatami/packages
 mkdir -p "$DF/root/var/lib/tatami/packages"; cp "$DF/out/"* "$DF/root/var/lib/tatami/packages/"

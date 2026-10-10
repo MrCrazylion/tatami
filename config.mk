@@ -18,6 +18,8 @@ SYSCONFDIR ?= /etc
 DB_DIR ?= /var/lib/tatami
 CACHEDIR ?= /var/cache/tatami
 
-# A fixed package extension for tatami and tatamk, without the leading dot
-# (default: empty = tar.<compression>, every compression accepted)
-PKG_EXT ?=
+# The package file extension for tatami and tatamk, without the leading dot.
+# Packages are named <name>_<version>-<release>_<arch>.<extension>. The compression
+# inside (zstd by default) is detected from the content, so it does not matter here.
+# Leave it empty to use tar.<compression> (tar.zst, tar.xz, ...) instead.
+PKG_EXT ?= tar.pkg
