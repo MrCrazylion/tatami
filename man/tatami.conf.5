@@ -104,23 +104,16 @@ It is never used for local paths or
 .B file://
 repositories.
 .TP
-.B PUBKEY
-The Ed25519 public key (64 hexadecimal digits, or base64 of the 32 bytes) that signs
-the remote repositories, as printed by
-.BR "tatami keygen" .
-For every remote
-.B repo.solv
-and package a
-.B .sig
-file is fetched and verified; a failure aborts.
-Local paths and
-.B file://
-repositories are trusted and never checked.
-Without a
-.B PUBKEY
-remote repositories are refused;
-.B PUBKEY = none
-accepts unsigned remote data (the SHA\-256 checksums of the index are still checked).
+.B ALLOW_UNSIGNED
+.B yes
+or
+.B no
+(the default).
+Whether remote repositories without a trusted key, and unsigned remote data, are accepted; see
+.BR TRUSTED KEYS .
+With
+.B yes
+unsigned remote data is accepted (the SHA\-256 checksums of the index are still checked).
 .TP
 .B BULKHEAD
 .B yes
@@ -202,6 +195,37 @@ The shipped file has one rule:
 .RS
 .B UPGRADE ^etc/.*$ NO
 .RE
+.SH TRUSTED KEYS
+The trusted public keys are the files in
+.BR /etc/tatami/keys/ :
+one Ed25519 public key per file (64 hexadecimal digits, or base64 of the 32 bytes), such
+as the
+.B .pub
+files made by
+.BR "tatami keygen" .
+To trust a signer, copy its
+.B .pub
+file there; to stop trusting it, delete the file.
+Names starting with a dot, directories and files that are not keys (reported with a
+warning) are skipped.
+.PP
+For every remote
+.B repo.solv
+and package a
+.B .sig
+file is fetched and verified; a signature made by
+.I any
+of the keys is good, anything else aborts.
+Local paths and
+.B file://
+repositories are trusted and never checked.
+With no key in the directory remote repositories are refused, unless
+.B ALLOW_UNSIGNED = yes
+is set in
+.BR tatami.conf .
+The former
+.B PUBKEY
+setting is refused with a message that names the directory.
 .SH REPOSITORIES
 Repositories are listed in
 .B /etc/tatami/repos.conf
@@ -247,7 +271,7 @@ downloads packages to
 both with
 .BR FETCHCMD ,
 and verifies them (see
-.BR PUBKEY ).
+.BR "TRUSTED KEYS" ).
 Publish such a repository by putting the packages and the files made by
 .BR tatamk (8)
 (the index and the signatures) on a server.
@@ -302,6 +326,9 @@ when libraries change.
 .B /etc/tatami/tatami.conf
 This file.
 .TP
+.B /etc/tatami/keys/
+Trusted public keys.
+.TP
 .B /etc/tatami/hold
 Held packages.
 .TP
@@ -315,8 +342,14 @@ Repository lists (definitions only).
 Hooks.
 .SH EXAMPLE
 .nf
-PUBKEY      = 05ad836299e2a530bbffd0b4da78f6bc88189250b32c654c4ef8db13ea09e3be
 PKG_COMPRESSION = zst
+.fi
+.PP
+in
+.BR /etc/tatami/keys/author.pub :
+.PP
+.nf
+05ad836299e2a530bbffd0b4da78f6bc88189250b32c654c4ef8db13ea09e3be
 .fi
 .PP
 in

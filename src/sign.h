@@ -3,6 +3,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace std;
 
@@ -14,7 +15,7 @@ using namespace std;
 //   tatami sign <file> [private-key-file]      writes <file>.sig
 //
 // A private key file holds the 32-byte seed as 64 hex digits; a public key is
-// 32 bytes, written as 64 hex digits (PUBKEY in tatami.conf also takes base64).
+// 32 bytes, written as 64 hex digits (a key file in etc/tatami/keys also takes base64).
 // A .sig file holds the 64-byte signature as 128 hex digits.
 
 // A signature that is missing, malformed or does not match
@@ -31,11 +32,18 @@ string file_sha256(const string& file);
 // Hex (64 digits) or base64 (32 bytes) to 32 bytes. False if it is neither.
 bool decode_pubkey(const string& text, unsigned char out[32]);
 
+// A trusted public key: the 32 bytes and the file it came from
+struct pubkey_t {
+	unsigned char bytes[32];
+	string file;
+};
+
 // Signs 'file'; returns the signature as 128 hex digits
 string sign_file(const string& file, const unsigned char seed[32]);
 
 // Checks 'file' against the signature in 'sigfile'. Throws signature_error.
-void verify_file(const string& file, const string& sigfile, const unsigned char pubkey[32]);
+// The signature is good if ANY of the keys matches; with no keys it never is.
+void verify_file(const string& file, const string& sigfile, const vector<pubkey_t>& keys);
 
 // Entry points of  tatami keygen  and  tatami sign  (no configuration, no root)
 int keygen_main(int argc, char** argv);

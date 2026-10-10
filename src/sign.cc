@@ -1,5 +1,6 @@
 #include "sign.h"
 #include "util.h"
+#include "paths.h"
 #include <sodium.h>
 #include <cerrno>
 #include <cstdio>
@@ -239,7 +240,7 @@ string sign_file(const string& file, const unsigned char seed[32])
 	return hex_encode(sig, 64);
 }
 
-void verify_file(const string& file, const string& sigfile, const unsigned char pubkey[32])
+void verify_file(const string& file, const string& sigfile, const vector<pubkey_t>& keys)
 {
 	string text;
 	try {
@@ -254,9 +255,15 @@ void verify_file(const string& file, const string& sigfile, const unsigned char 
 	init_sodium();
 	crypto_sign_ed25519ph_state st;
 	file_feed(file, &st);
-	if (crypto_sign_ed25519ph_final_verify(&st, sig, pubkey) != 0)
-		throw signature_error("SIGNATURE VERIFICATION FAILED for " + file +
-				      ": it was not signed with the key in PUBKEY");
+	// the hash state is a plain struct: finish a copy of it for every trusted key
+	for (size_t i = 0; i < keys.size(); i++) {
+		crypto_sign_ed25519ph_state copy = st;
+		if (crypto_sign_ed25519ph_final_verify(&copy, sig, keys[i].bytes) == 0)
+			return;
+	}
+	throw signature_error("SIGNATURE VERIFICATION FAILED for " + file +
+			      ": it was not signed with any of the " + itos(keys.size()) +
+			      " trusted key(s) in /" KEYS_DIR);
 }
 
 int keygen_main(int argc, char** argv)
@@ -272,7 +279,7 @@ int keygen_main(int argc, char** argv)
 				cout << "usage: tatami keygen [-f] [private-key-file]\n"
 					"  makes an Ed25519 key pair; the private key goes to the file (default\n"
 					"  $TATAMI_PRIVKEY or ~/.tatami/privkey, mode 600), the public key to <file>.pub.\n"
-					"  Put the public key into tatami.conf as PUBKEY = <key>." << endl;
+					"  Copy the public key into /etc/tatami/keys/ on every client machine." << endl;
 				return 0;
 			} else if (!a.empty() && a[0] == '-')
 				throw runtime_error("invalid option " + a);
@@ -305,8 +312,8 @@ int keygen_main(int argc, char** argv)
 
 		cout << "Private key: " << priv << " (keep it secret)" << endl;
 		cout << "Public key:  " << priv << ".pub" << endl;
-		cout << "Add this to tatami.conf on every machine that installs your packages:" << endl;
-		cout << "PUBKEY = " << pub << endl;
+		cout << "Copy the public key file into /etc/tatami/keys/ on every machine that installs your packages:" << endl;
+		cout << "  cp " << priv << ".pub /etc/tatami/keys/" << endl;
 	} catch (runtime_error& e) {
 		cerr << "tatami: " << e.what() << endl;
 		return 1;

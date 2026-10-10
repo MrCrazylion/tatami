@@ -169,20 +169,26 @@ file is stored in the cache under its final name or installed.
   Note that this is the pre-hash variant: a plain `ed25519 verify` tool will not accept
   it.
 - **Key management.** `tatami keygen` writes `~/.tatami/privkey` (mode 0600, directory
-  0700) and `.pub`, and prints the `PUBKEY = …` line; it never overwrites a key
+  0700) and `.pub`, and prints the command that copies the `.pub` file to `/etc/tatami/keys/`; it never overwrites a key
   without `-f`. `tatami sign <file> [key]` writes `<file>.sig`. Keys are hex; the
   public key may also be given as base64.
 - **Producer.** `tatamk` signs as part of the build when `$TATAMI_PRIVKEY` or
   `~/.tatami/privkey` exists: it refreshes the output directory's `repo.solv`, signs the
   package and the index. `--no-sign` skips it.
-- **Consumer.** With `PUBKEY` set, `tatami update` fetches `repo.solv` and
+- **Trust store.** The trusted keys are the files of `<root>/etc/tatami/keys/` (the
+  Alpine/Arch model): add a `.pub` file to trust a signer, delete it to stop. They are
+  loaded at start-up in name order; a file that is not a key is skipped with a warning,
+  dot files and subdirectories are ignored. A signature is good if it verifies against
+  **any** key (the SHA-512 pre-hash state is finished once per key).
+- **Consumer.** With at least one trusted key, `tatami update` fetches `repo.solv` and
   `repo.solv.sig`; `tatami install` fetches each package and its `.sig`. Everything is
   verified into `.part` files first. A bad, wrong-key or missing signature aborts, and
   the previous index is kept. Cached indexes are re-verified each time they are loaded
   (one that fails is ignored with a warning, never used), and cached packages are
   reused only if their signature still verifies.
-- **No key, no trust.** A remote repository without a `PUBKEY` is refused. `PUBKEY =
-  none` explicitly accepts unsigned data (the checksums are still checked).
+- **No key, no trust.** With no key in the directory a remote repository is refused.
+  `ALLOW_UNSIGNED = yes` in `tatami.conf` explicitly accepts unsigned data (the checksums
+  are still checked). The old `PUBKEY` setting is refused with a message naming the directory.
 
 ### The local bypass
 
@@ -245,11 +251,12 @@ with pacman's `IgnorePkg`). Held packages that are not installed are ignored.
 ### Where things are configured
 
 - `/etc/tatami/tatami.conf` — engine settings only (`PKG_EXT`, `PKG_COMPRESSION`,
-  `FETCHCMD`, `PUBKEY`, `BULKHEAD`, and the `REPO_DIRS` fallback). Missing, empty or
+  `FETCHCMD`, `ALLOW_UNSIGNED`, `BULKHEAD`, and the `REPO_DIRS` fallback). Missing, empty or
   unreadable is fine: the built-in defaults apply. The old `ARCH`, `HoldPkg` and rule lines
   are refused with a message that names their new home.
 - `/etc/tatami/repos.conf`, `repos.d/*.conf` — repository definitions and nothing else
-  (no `FETCHCMD`, no `PUBKEY`: those are engine settings).
+  (no `FETCHCMD`, no `ALLOW_UNSIGNED`: those are engine settings).
+- `/etc/tatami/keys/` — trusted public keys, one file each.
 - `/etc/tatami/hold` — held packages, one per line.
 - `/etc/tatami/upgrade.rules` — the `UPGRADE`/`INSTALL` `YES|NO` rules.
   A missing `hold` or `upgrade.rules` is simply ignored (nothing held, no rule). All of

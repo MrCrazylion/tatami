@@ -106,11 +106,9 @@ or
 .BR ~/.tatami/privkey ,
 mode 0600), the public key to
 .IR file .pub,
-and the
-.B PUBKEY
-line for
-.BR tatami.conf (5)
-is printed.
+and the command that copies the public key into
+.B /etc/tatami/keys/
+on the client machines is printed.
 An existing key is replaced only with
 .BR \-f .
 .TP
@@ -240,18 +238,19 @@ and
 .B install
 fetches each package and its
 .BR .sig .
-Every file is verified with the key
-.B PUBKEY
-from
-.BR tatami.conf (5)
-before anything is stored or installed; a missing, malformed or wrong signature
+Every file is verified with the trusted public keys, the files in
+.B /etc/tatami/keys/
+(a signature by any one of them is good), before anything is stored or installed; a missing, malformed or wrong signature
 aborts the command.
 Cached indexes are verified again each time they are loaded, and cached packages are
 reused only if their signature still verifies.
-Without a
-.B PUBKEY
-a remote repository is refused, unless
-.B PUBKEY = none
+To trust a signer, copy its
+.B .pub
+file into that directory; to stop, delete the file.
+Without a key there a remote repository is refused, unless
+.B ALLOW_UNSIGNED = yes
+in
+.BR tatami.conf (5)
 says that unsigned data is acceptable.
 .PP
 The index also contains the SHA\-256 checksum of every package.

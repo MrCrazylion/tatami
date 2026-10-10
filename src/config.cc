@@ -3,6 +3,10 @@
 #include "util.h"
 #include <fstream>
 #include <sstream>
+#include <algorithm>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <iostream>
 
 static string unquote(const string& s)
 {
@@ -16,7 +20,7 @@ config_t default_config()
 	config_t cfg;
 	cfg.pkg_ext = DEFAULT_PKG_EXT;
 	cfg.fetchcmd = DEFAULT_FETCHCMD;
-	cfg.have_pubkey = false;
+	cfg.allow_unsigned = false;
 	// no repository listed: <root>/var/lib/tatami/packages (worked out per root)
 	return cfg;
 }
@@ -91,16 +95,12 @@ config_t read_config(const string& filename, bool required)
 				if (value.empty())
 					throw runtime_error(where + "FETCHCMD is empty");
 				cfg.fetchcmd = value;
+			} else if (key == "ALLOW_UNSIGNED") {
+				if (value != "yes" && value != "no")
+					throw runtime_error(where + "invalid ALLOW_UNSIGNED '" + value + "', should be yes or no");
+				cfg.allow_unsigned = value == "yes";
 			} else if (key == "PUBKEY") {
-				if (value == "none") {
-					cfg.pubkey = value;
-					cfg.have_pubkey = false;
-				} else if (decode_pubkey(value, cfg.pubkey_bytes)) {
-					cfg.pubkey = value;
-					cfg.have_pubkey = true;
-				} else {
-					throw runtime_error(where + "invalid PUBKEY (expected 64 hex digits or a 32-byte base64 key, or none)");
-				}
+				throw runtime_error(where + "PUBKEY is gone: put the public key file into " KEYS_DIR "/");
 			} else if (key == "BULKHEAD") {
 				if (value != "yes" && value != "no")
 					throw runtime_error(where + "invalid BULKHEAD '" + value + "', should be yes or no");
@@ -182,5 +182,39 @@ void read_rules(const string& filename, config_t& cfg)
 			throw runtime_error(where + "'" + action + "' unknown action, should be YES or NO, aborting");
 
 		cfg.rules.push_back(rule);
+	}
+}
+
+void read_keys(const string& dir, config_t& cfg)
+{
+	DIR* d = opendir(dir.c_str());
+	if (!d)
+		return;
+
+	vector<string> names;
+	while (struct dirent* e = readdir(d)) {
+		const string n = e->d_name;
+		if (n[0] != '.')
+			names.push_back(n);
+	}
+	closedir(d);
+	sort(names.begin(), names.end());
+
+	for (size_t i = 0; i < names.size(); i++) {
+		const string path = dir + "/" + names[i];
+		struct stat st;
+		if (stat(path.c_str(), &st) == -1 || !S_ISREG(st.st_mode))
+			continue;
+
+		pubkey_t key;
+		key.file = path;
+		ifstream in(path.c_str());
+		string text;
+		getline(in, text);
+		if (text.size() > 256 || !decode_pubkey(text, key.bytes)) {
+			cerr << "tatami: warning: " << path << " is not a public key (64 hex digits or base64), ignored" << endl;
+			continue;
+		}
+		cfg.trusted_keys.push_back(key);
 	}
 }

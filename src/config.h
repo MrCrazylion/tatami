@@ -1,6 +1,7 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#include "sign.h"
 #include <string>
 #include <vector>
 
@@ -42,9 +43,8 @@ struct config_t {
 	vector<string> repo_dirs;       // directories scanned by 'tatami update'
 	vector<string> hold_pkgs;       // etc/tatami/hold: installed packages that are never upgraded or removed by a transaction
 	string fetchcmd;                // downloads remote repositories (FETCHCMD)
-	string pubkey;                  // PUBKEY: Ed25519 public key (hex or base64), or "none"
-	bool have_pubkey;               // pubkey_bytes is valid
-	unsigned char pubkey_bytes[32];
+	bool allow_unsigned;            // ALLOW_UNSIGNED: remote data without signatures is accepted
+	vector<pubkey_t> trusted_keys;  // the files of etc/tatami/keys: a signature by any of them is good
 	string bulkhead;                // tatamk only: "yes" or "no" (build isolation)
 	string compression;             // used by tatamk only: gz, xz, zst, bz2 or none
 	vector<rule_t> rules;           // etc/tatami/upgrade.rules: UPGRADE/INSTALL rules
@@ -59,5 +59,10 @@ config_t read_config(const string& filename, bool required);
 // cfg.rules from the rules file. A file that does not exist is ignored.
 void read_hold(const string& filename, config_t& cfg);
 void read_rules(const string& filename, config_t& cfg);
+
+// Reads every regular file of the directory (not names starting with '.') as a
+// public key into cfg.trusted_keys, in name order. A missing directory is fine; a
+// file that is not a key is skipped with a warning.
+void read_keys(const string& dir, config_t& cfg);
 
 #endif /* CONFIG_H */

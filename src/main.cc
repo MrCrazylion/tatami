@@ -146,6 +146,7 @@ int main(int argc, char** argv)
 
 		read_hold(root_resolve(ctx.opt.root, HOLD_FILE), ctx.cfg);
 		read_rules(root_resolve(ctx.opt.root, RULES_FILE), ctx.cfg);
+		read_keys(root_resolve(ctx.opt.root, KEYS_DIR), ctx.cfg);
 
 		struct utsname un;
 		if (uname(&un) == -1)

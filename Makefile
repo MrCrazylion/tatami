@@ -310,7 +310,7 @@ check: all
 # as for any upgrade. The package database, index and metadata directories
 # below $(VARDIR) are created by tatami itself on first use.
 install: all
-	mkdir -p $(DESTDIR)$(BINDIR) $(DESTDIR)$(ETCDIR) $(DESTDIR)$(ETCDIR)/tatami/hooks.d \
+	mkdir -p $(DESTDIR)$(BINDIR) $(DESTDIR)$(ETCDIR) $(DESTDIR)$(ETCDIR)/tatami/hooks.d $(DESTDIR)$(ETCDIR)/tatami/keys \
 		$(DESTDIR)$(VARDIR)/packages
 	install -m0755 tatami $(DESTDIR)$(BINDIR)/tatami
 	install -m0755 tatamk $(DESTDIR)$(BINDIR)/tatamk

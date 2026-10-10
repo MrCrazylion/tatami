@@ -201,21 +201,21 @@ size_t index_dir(const context& ctx, const string& dir)
 //
 // Signatures. Only things that come over the network are checked: <file>.sig is
 // fetched next to every remote repo.solv and package and verified with the Ed25519
-// key PUBKEY of tatami.conf, before the file is used. Local paths and file://
-// repositories are trusted and are never checked. A remote repository without a
-// PUBKEY is refused, unless the configuration says PUBKEY = none.
+// any of the public keys in etc/tatami/keys/, before the file is used. Local paths and
+// file:// repositories are trusted and are never checked. A remote repository with no
+// trusted key is refused, unless tatami.conf says ALLOW_UNSIGNED = yes.
 //
 
 bool signatures_wanted(const context& ctx)
 {
-	return ctx.cfg.pubkey != "none";
+	return !ctx.cfg.allow_unsigned;
 }
 
 void require_pubkey(const context& ctx, const repo_spec& r)
 {
-	if (signatures_wanted(ctx) && !ctx.cfg.have_pubkey)
-		throw signature_error("repository " + r.name + " (" + r.url + ") is remote but PUBKEY is not set in tatami.conf: "
-				      "set PUBKEY = <public key> to verify its signatures, or PUBKEY = none to accept unsigned data");
+	if (signatures_wanted(ctx) && ctx.cfg.trusted_keys.empty())
+		throw signature_error("repository " + r.name + " (" + r.url + ") is remote but there is no trusted key in /" KEYS_DIR ": "
+				      "copy the repository's public key (.pub file) there, or set ALLOW_UNSIGNED = yes in tatami.conf to accept unsigned data");
 }
 
 // Fetches <url>.sig to <dest>; a failure means there is no usable signature
@@ -250,7 +250,7 @@ void load_repositories(const context& ctx, resolver& res)
 			try {
 				if (signatures_wanted(ctx)) {
 					require_pubkey(ctx, r);
-					verify_file(solv, solv + ".sig", ctx.cfg.pubkey_bytes);
+					verify_file(solv, solv + ".sig", ctx.cfg.trusted_keys);
 				}
 			} catch (signature_error& e) {
 				cerr << "tatami: warning: ignoring repository " << r.name << ": " << e.what() << endl;
@@ -296,9 +296,9 @@ string fetch_package(const context& ctx, const plan_step& st)
 	const string cached = dir + "/" + file;
 
 	const bool signed_ = signatures_wanted(ctx);
-	if (signed_ && !ctx.cfg.have_pubkey)
-		throw signature_error("package " + url + " is remote but PUBKEY is not set in tatami.conf: "
-				      "set PUBKEY = <public key>, or PUBKEY = none to accept unsigned packages");
+	if (signed_ && ctx.cfg.trusted_keys.empty())
+		throw signature_error("package " + url + " is remote but there is no trusted key in /" KEYS_DIR ": "
+				      "copy the repository's public key (.pub file) there, or set ALLOW_UNSIGNED = yes in tatami.conf to accept unsigned packages");
 
 	// The index promises the SHA-256 of the file: what comes over the network must
 	// match it (this is what stops a substituted package). Local files are never
@@ -313,7 +313,7 @@ string fetch_package(const context& ctx, const plan_step& st)
 			if (file_sha256(cached) != st.checksum)
 				throw runtime_error("checksum differs");
 			if (signed_)
-				verify_file(cached, cached + ".sig", ctx.cfg.pubkey_bytes);
+				verify_file(cached, cached + ".sig", ctx.cfg.trusted_keys);
 			pkgmeta m = pkg_read_meta(cached);
 			if (m.name == st.name && m.version == st.version)
 				return cached;
@@ -336,7 +336,7 @@ string fetch_package(const context& ctx, const plan_step& st)
 		// nothing leaves the .part names until the signature has been verified
 		try {
 			fetch_signature(ctx, url, part + ".sig");
-			verify_file(part, part + ".sig", ctx.cfg.pubkey_bytes);
+			verify_file(part, part + ".sig", ctx.cfg.trusted_keys);
 		} catch (runtime_error&) {
 			unlink(part.c_str());
 			unlink((part + ".sig").c_str());
@@ -645,7 +645,7 @@ void update_remote(const context& ctx, const repo_spec& r)
 	if (check_sig) {
 		try {
 			fetch_signature(ctx, r.url + "/repo.solv", part + ".sig");
-			verify_file(part, part + ".sig", ctx.cfg.pubkey_bytes);
+			verify_file(part, part + ".sig", ctx.cfg.trusted_keys);
 		} catch (runtime_error&) {
 			unlink(part.c_str());
 			unlink((part + ".sig").c_str());

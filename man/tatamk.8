@@ -132,8 +132,12 @@ signs the package, writing
 signs the index, writing
 .BR repo.solv.sig .
 .PP
-Publish all of these files together; clients configure the public key as
-.B PUBKEY
+Publish all of these files together; clients put the public key (the
+.B .pub
+file made by
+.BR "tatami keygen" )
+into
+.B /etc/tatami/keys/
 (see
 .BR tatami.conf (5)).
 Without a key, packages are built unsigned and the output directory is not indexed.

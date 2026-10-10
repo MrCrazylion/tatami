@@ -152,13 +152,14 @@ FETCHCMD = curl -f -L -# "%URL%" -o "%DEST%"
 
 ### One file per job
 
-`tatami.conf` holds the engine settings only: `FETCHCMD`, `PUBKEY`, `PKG_EXT`,
+`tatami.conf` holds the engine settings only: `FETCHCMD`, `ALLOW_UNSIGNED`, `PKG_EXT`,
 `PKG_COMPRESSION` and `BULKHEAD`. Everything else has its own plain-text file in
 `/etc/tatami`, and every one of them may be missing:
 
 | File | Content |
 | --- | --- |
 | `repos.conf`, `repos.d/*.conf` | Repository definitions only: `core = https://...`, `local = /srv/packages` |
+| `keys/` | Trusted public keys, one file each (`*.pub`) |
 | `hold` | Held packages, one name per line (`#` comments allowed) |
 | `upgrade.rules` | `UPGRADE`/`INSTALL` rules: `EVENT  PATTERN  YES\|NO` |
 | `hooks.d/*.hook` | Post-transaction hooks |
@@ -191,20 +192,23 @@ tatami keygen
 ```
 Private key: /home/you/.tatami/privkey (keep it secret)
 Public key:  /home/you/.tatami/privkey.pub
-Add this to tatami.conf on every machine that installs your packages:
-PUBKEY = 05ad836299e2a530bbffd0b4da78f6bc88189250b32c654c4ef8db13ea09e3be
+Copy the public key file into /etc/tatami/keys/ on every machine that installs your packages:
+  cp /home/you/.tatami/privkey.pub /etc/tatami/keys/
 ```
 
 The private key is stored with mode 0600 in `~/.tatami/privkey`. An existing key is never
 overwritten without `-f`. Back it up: a lost key cannot be recovered, and packages signed
 with a replaced key no longer verify.
 
-**2. Trust the public key** on each machine that installs your packages. Copy the printed
-line into `/etc/tatami/tatami.conf`:
+**2. Trust the public key** on each machine that installs your packages: copy the `.pub` file
+into `/etc/tatami/keys/`, which is simply a directory of public keys, one per file:
 
-```ini
-PUBKEY = 05ad836299e2a530bbffd0b4da78f6bc88189250b32c654c4ef8db13ea09e3be
+```sh
+cp privkey.pub /etc/tatami/keys/myrepo.pub
 ```
+
+To trust another signer add its file too; a signature made by **any** of the keys is accepted.
+To stop trusting one, delete its file. Nothing else needs to be edited.
 
 **3. That is all.** From now on:
 
@@ -212,14 +216,14 @@ PUBKEY = 05ad836299e2a530bbffd0b4da78f6bc88189250b32c654c4ef8db13ea09e3be
   automatically. It refreshes the `repo.solv` index of the output directory and writes
   `<package>.sig` and `repo.solv.sig` next to it. `--no-sign` skips this.
 - `tatami update` and `tatami install` fetch the `.sig` files of everything they download
-  from a **remote** repository and verify them against `PUBKEY`. A missing, malformed or
+  from a **remote** repository and verify them against the keys in `/etc/tatami/keys/`. A missing, malformed or
   wrong signature aborts the command, and the SHA-256 hash of each package in the index must
   match the download.
 - **Local** files, repositories given as a path or as `file://`, and package files given on
   the command line are trusted: they are never checked and need no key.
 
-A remote repository without a `PUBKEY` is refused. If you really want to use an unsigned
-one, write `PUBKEY = none`.
+With no key in `/etc/tatami/keys/`, remote repositories are refused. If you really want to
+use unsigned ones, write `ALLOW_UNSIGNED = yes` in `tatami.conf`.
 
 ## 4. Repositories
 
@@ -239,7 +243,7 @@ main = https://mirror.example.com/tatami/x86_64
 - A **local** repository is a directory of packages, read in place. `file:///path` works too.
   It needs no signature and does not use the network.
 - A **remote** repository (`http://`, `https://` or `ftp://`) is downloaded with `FETCHCMD`
-  and needs a `PUBKEY`. `tatami update` fetches its index; `tatami install` fetches the
+  and needs a trusted key in `/etc/tatami/keys/`. `tatami update` fetches its index; `tatami install` fetches the
   packages and deletes them from the cache once the transaction has committed.
   The remote directory must contain the packages, `repo.solv`, and their `.sig` files, which
   is exactly what `tatamk` produces in its output directory.

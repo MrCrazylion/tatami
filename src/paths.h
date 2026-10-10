@@ -29,6 +29,7 @@
 #define TATAMI_ETC      TATAMI_SYSCONFDIR "/tatami"
 #define HOLD_FILE       TATAMI_ETC "/hold"               // one package name per line
 #define RULES_FILE      TATAMI_ETC "/upgrade.rules"      // UPGRADE/INSTALL YES|NO rules
+#define KEYS_DIR        TATAMI_ETC "/keys"               // trusted public keys, one file each
 #define REPOS_CONF      TATAMI_ETC "/repos.conf"         // name=url lines
 #define REPOS_DIR       TATAMI_ETC "/repos.d"            // *.conf files of the same form
 #define REPO_CACHE      STATE_DIR "/repos"               // downloaded indexes: <name>/repo.solv

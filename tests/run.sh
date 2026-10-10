@@ -1242,7 +1242,7 @@ mkp "$SRVDIR/core" rm-lib 1.0 - - usr/share/rm-lib/f:lib
 "$TATAMI" index "$SRVDIR/core" >/dev/null
 # the "network": a fetch command that logs and copies from $SRVDIR instead of connecting
 cat > "$T/rem.conf" <<'CONF'
-PUBKEY = none
+ALLOW_UNSIGNED = yes
 BULKHEAD = no
 FETCHCMD = sh -c 'echo "$0" >> "$FLOG"; cp "$SRVDIR/${0#https://mirror.test/}" "$1"' %URL% %DEST%
 CONF
@@ -1278,14 +1278,14 @@ rr update >/dev/null 2>&1
 has_o=$(rr update 2>&1); echo "$has_o" | grep -q "not a valid index" && ok "an invalid downloaded index is rejected" || bad "invalid index accepted" "$has_o"
 cmp -s "$T/good.solv" "$RR/var/lib/tatami/repos/core/repo.solv" && ok "the previous index was kept" || bad "index replaced"
 # a failing / missing fetch command
-printf 'PUBKEY = none\nBULKHEAD = no\nFETCHCMD = false %%URL%% %%DEST%%\n' > "$T/rem-fail.conf"
+printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\nFETCHCMD = false %%URL%% %%DEST%%\n' > "$T/rem-fail.conf"
 check "update with a failing FETCHCMD only warns" 0 "$TATAMI" -r "$RR" -c "$T/rem-fail.conf" update
-printf 'PUBKEY = none\nBULKHEAD = no\nFETCHCMD = no-such-fetcher-xyz %%URL%% %%DEST%%\n' > "$T/rem-miss.conf"
+printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\nFETCHCMD = no-such-fetcher-xyz %%URL%% %%DEST%%\n' > "$T/rem-miss.conf"
 OUT=$("$TATAMI" -r "$RR" -c "$T/rem-miss.conf" update 2>&1); echo "$OUT" | grep -q "could not run no-such-fetcher-xyz" && ok "missing fetch program is reported" || bad "missing program" "$OUT"
-printf 'PUBKEY = none\nBULKHEAD = no\nFETCHCMD = curl %%URL%%\n' > "$T/rem-bad.conf"
+printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\nFETCHCMD = curl %%URL%%\n' > "$T/rem-bad.conf"
 OUT=$("$TATAMI" -r "$RR" -c "$T/rem-bad.conf" update 2>&1); echo "$OUT" | grep -q "must contain %URL% and %DEST%" && ok "FETCHCMD without %DEST% is refused" || bad "bad FETCHCMD" "$OUT"
 # the default FETCHCMD is curl -f -L -# "%URL%" -o "%DEST%"
-printf 'PUBKEY = none\nBULKHEAD = no\n' > "$T/rem-def.conf"
+printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\n' > "$T/rem-def.conf"
 mkdir -p "$T/fakebin"; printf '#!/bin/sh\necho "$@" > "$FLOG"\nexit 1\n' > "$T/fakebin/curl"; chmod +x "$T/fakebin/curl"
 PATH="$T/fakebin:$PATH" "$TATAMI" -r "$RR" -c "$T/rem-def.conf" update >/dev/null 2>&1
 grep -q -- '^-f -L -# https://mirror.test/core/repo.solv -o .*/repos/core/repo.solv.part$' "$FLOG" && ok "default FETCHCMD is: curl -f -L -# URL -o DEST" || bad "default command" "$(cat "$FLOG")"
@@ -1317,7 +1317,7 @@ printf '\r######################100.0%%\n' >&2
 cp "$SRVDIR/${1#https://mirror.test/}" "$2"
 PF
 chmod +x "$T/prog-fetch"
-printf 'PUBKEY = none\nBULKHEAD = no\nFETCHCMD = %s %%URL%% %%DEST%%\n' "$T/prog-fetch" > "$T/prog.conf"
+printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\nFETCHCMD = %s %%URL%% %%DEST%%\n' "$T/prog-fetch" > "$T/prog.conf"
 echo "core = https://mirror.test/core" > "$RR/etc/tatami/repos.conf"; rm -rf "$RR/etc/tatami/repos.d"
 cp "$T/good.solv" "$SRVDIR/core/repo.solv" 2>/dev/null || "$TATAMI" index "$SRVDIR/core" >/dev/null
 rm -f "$SRVDIR"/core/rm-*_1.0_*; mkp "$SRVDIR/core" rm-app 1.0 - - usr/share/rm-app/f:app; "$TATAMI" index "$SRVDIR/core" >/dev/null
@@ -1346,7 +1346,7 @@ OUT=$("$TATAMI" -r "$RR" -c "$T/prog.conf" update 2>&1)
 echo "$OUT" | grep -q '\[=' && bad "a bar was drawn without a terminal" "$OUT" || ok "no bar when stdout is not a terminal"
 echo "$OUT" | grep -q '#' && bad "raw text without terminal" "$OUT" || ok "raw progress hidden without a terminal too"
 printf '#!/bin/sh\necho "curl: (22) The requested URL returned error: 404" >&2\nexit 22\n' > "$T/fail-fetch"; chmod +x "$T/fail-fetch"
-printf 'PUBKEY = none\nBULKHEAD = no\nFETCHCMD = %s %%URL%% %%DEST%%\n' "$T/fail-fetch" > "$T/failmsg.conf"
+printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\nFETCHCMD = %s %%URL%% %%DEST%%\n' "$T/fail-fetch" > "$T/failmsg.conf"
 OUT=$("$TATAMI" -r "$RR" -c "$T/failmsg.conf" update 2>&1)
 echo "$OUT" | grep -q "exit status 22: curl: (22) The requested URL returned error: 404" && ok "a failing command's last message is in the error" || bad "no failure message" "$OUT"
 echo
@@ -1358,13 +1358,15 @@ printf abc > "$SG/abc"; echo 833fe62409237b9d62ec77587520911e9a759cec1d19755b7da
 check "tatami sign writes <file>.sig" 0 "$TATAMI" sign "$SG/abc" "$SG/rfc.key"
 [ "$(cat "$SG/abc.sig")" = 98a70222f0b8121aa9d30f813d683f809e462b469c7ff87639499bb94e6dae4131f85042463c2a355a2003d062adf5aaa10b8c61e636062aaad11c2a26083406 ] && ok "the signature is the RFC 8032 Ed25519ph vector" || bad "wrong signature" "$(cat "$SG/abc.sig")"
 check "keygen makes a key pair in ~/.tatami" 0 env HOME="$SG/home" "$TATAMI" keygen
-has "it prints the PUBKEY line" "^PUBKEY = [0-9a-f]{64}$"
-PUB=$(sed -n 's/^PUBKEY = //p' <<<"$OUT")
+has "it says to copy the public key into /etc/tatami/keys/" "cp .*privkey.pub /etc/tatami/keys/"
+hasnt "and no longer mentions PUBKEY" "PUBKEY"
+PUB=$(cat "$SG/home/.tatami/privkey.pub")
+echo "$PUB" | grep -Eq "^[0-9a-f]{64}$" && ok "the .pub file holds the 64-digit public key" || bad "pub file content" "$PUB"
 [ "$(stat -c %a "$SG/home/.tatami/privkey")" = 600 ] && [ "$(stat -c %a "$SG/home/.tatami")" = 700 ] && ok "private key is 0600 in a 0700 directory" || bad "key permissions"
-[ "$(cat "$SG/home/.tatami/privkey.pub")" = "$PUB" ] && ok "the public key is written next to it" || bad "pub file"
+[ -f "$SG/home/.tatami/privkey.pub" ] && [ "$(stat -c %a "$SG/home/.tatami/privkey.pub")" = 644 ] && ok "the public key is written next to it, world-readable" || bad "pub file"
 check "keygen does not overwrite a key" 1 env HOME="$SG/home" "$TATAMI" keygen
 check "keygen -f replaces it" 0 env HOME="$SG/home" "$TATAMI" keygen -f
-PUB=$(sed -n 's/^PUBKEY = //p' <<<"$OUT")
+PUB=$(cat "$SG/home/.tatami/privkey.pub")
 check "sign of a missing file fails" 1 "$TATAMI" sign "$SG/nothing" "$SG/home/.tatami/privkey"
 check "sign with a missing key fails" 1 "$TATAMI" sign "$SG/abc" "$SG/nokey"
 echo notakey > "$SG/bad.key"; chmod 600 "$SG/bad.key"
@@ -1386,9 +1388,11 @@ P="sg-app_1.0_${HARCH}.tar.pkg"
 [ -f "$SG/nosign/$P" ] && [ ! -e "$SG/nosign/$P.sig" ] && ok "--no-sign" || bad "--no-sign" "$(cat "$SG/mk3.log")"
 ( cd "$SG" && TATAMI_PRIVKEY="$SG/missing" "$TATAMK" -c "$TCONF" -f "$SG/Tatamifile" -o "$SG/x" ) > "$SG/mk4.log" 2>&1 && bad "a missing TATAMI_PRIVKEY was ignored" || ok "TATAMI_PRIVKEY that does not exist is an error"
 
-# remote repository with PUBKEY: everything fetched is verified
-echo "PUBKEY = $PUB" > "$SG/ok.conf"
-cat >> "$SG/ok.conf" <<'CONF'
+# remote repository with a trusted key in etc/tatami/keys: everything fetched is verified
+KEYS="$SG/root/etc/tatami/keys"; mkdir -p "$KEYS"; cp "$SG/home/.tatami/privkey.pub" "$KEYS/author.pub"
+nokeys() { rm -rf "$KEYS.off"; mv "$KEYS" "$KEYS.off"; }
+restorekeys() { rm -rf "$KEYS"; mv "$KEYS.off" "$KEYS"; }
+cat > "$SG/ok.conf" <<'CONF'
 BULKHEAD = no
 FETCHCMD = sh -c 'echo "$0" >> "$FLOG"; cp "$SRVDIR/${0#https://mirror.test/}" "$1"' %URL% %DEST%
 CONF
@@ -1417,9 +1421,13 @@ check "the retry" 0 sr -y install sg-app
 sr -y remove sg-app >/dev/null 2>&1
 
 # a different key, a tampered package, a missing signature: all refused
-echo "PUBKEY = $(sed -n 's/^PUBKEY = //p' <<<"$(HOME="$SG/home2" "$TATAMI" keygen)")" > "$SG/other.conf"; sed 1d "$SG/ok.conf" >> "$SG/other.conf"
-OUT=$("$TATAMI" -r "$SG/root" -c "$SG/other.conf" update 2>&1); rc=$?
+HOME="$SG/home2" "$TATAMI" keygen >/dev/null
+nokeys; mkdir -p "$KEYS"; cp "$SG/home2/.tatami/privkey.pub" "$KEYS/other.pub"
+OUT=$("$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update 2>&1); rc=$?
 [ $rc -ne 0 ] && echo "$OUT" | grep -q "SIGNATURE VERIFICATION FAILED" && ok "update aborts when the index is signed with another key" || bad "wrong key accepted (exit $rc)" "$OUT"
+cp "$SG/home/.tatami/privkey.pub" "$KEYS/author.pub"
+check "with both keys in the directory the signature of either is good" 0 "$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update
+restorekeys
 cp "$SG/root/var/lib/tatami/repos/core/repo.solv" "$SG/good.solv"
 cp "$SG/srv/core/$P" "$SG/pkg.good"
 printf 'tampered' >> "$SG/srv/core/$P"
@@ -1452,29 +1460,41 @@ OUT=$(sr list --available 2>&1); rc=$?
 echo "$OUT" | grep -q "ignoring repository core: SIGNATURE VERIFICATION FAILED" && ! echo "$OUT" | grep -q "sg-app" && ok "a tampered cached index is ignored with a warning, its packages are not offered" || bad "tampered cache used (exit $rc)" "$OUT"
 cp "$SG/good.solv" "$SG/root/var/lib/tatami/repos/core/repo.solv"
 
-# no key configured: remote data is refused unless PUBKEY = none
-sed 1d "$SG/ok.conf" > "$SG/nokey.conf"
-OUT=$("$TATAMI" -r "$SG/root" -c "$SG/nokey.conf" update 2>&1); rc=$?
-[ $rc -ne 0 ] && echo "$OUT" | grep -q "PUBKEY is not set" && ok "a remote repository without PUBKEY is refused" || bad "unauthenticated update (exit $rc)" "$OUT"
-OUT=$("$TATAMI" -r "$SG/root" -c "$SG/nokey.conf" list --available 2>&1); rc=$?
-echo "$OUT" | grep -q "ignoring repository core: .*PUBKEY is not set" && ! echo "$OUT" | grep -q "sg-app" && ok "its cached index is ignored too, not used unauthenticated" || bad "cache used without a key (exit $rc)" "$OUT"
-printf 'PUBKEY = garbage\n' > "$SG/badkey.conf"
-check "an invalid PUBKEY is a configuration error" 1 "$TATAMI" -r "$SG/root" -c "$SG/badkey.conf" list
+# no key in etc/tatami/keys: remote data is refused unless ALLOW_UNSIGNED = yes
+nokeys
+OUT=$("$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update 2>&1); rc=$?
+[ $rc -ne 0 ] && echo "$OUT" | grep -q "no trusted key in /etc/tatami/keys" && ok "a remote repository without a trusted key is refused" || bad "unauthenticated update (exit $rc)" "$OUT"
+OUT=$("$TATAMI" -r "$SG/root" -c "$SG/ok.conf" list --available 2>&1); rc=$?
+echo "$OUT" | grep -q "ignoring repository core: .*no trusted key" && ! echo "$OUT" | grep -q "sg-app" && ok "its cached index is ignored too, not used unauthenticated" || bad "cache used without a key (exit $rc)" "$OUT"
+{ cat "$SG/ok.conf"; echo "ALLOW_UNSIGNED = yes"; } > "$SG/allow.conf"
+check "ALLOW_UNSIGNED = yes accepts it without a key" 0 "$TATAMI" -r "$SG/root" -c "$SG/allow.conf" update
+{ cat "$SG/ok.conf"; echo "ALLOW_UNSIGNED = no"; } > "$SG/disallow.conf"
+check "ALLOW_UNSIGNED = no is the default" 1 "$TATAMI" -r "$SG/root" -c "$SG/disallow.conf" update
+{ cat "$SG/ok.conf"; echo "ALLOW_UNSIGNED = maybe"; } > "$SG/maybe.conf"
+check "ALLOW_UNSIGNED takes yes or no" 1 "$TATAMI" -r "$SG/root" -c "$SG/maybe.conf" list
+{ cat "$SG/ok.conf"; echo "PUBKEY = $PUB"; } > "$SG/oldkey.conf"
+check "PUBKEY in tatami.conf is refused" 1 "$TATAMI" -r "$SG/root" -c "$SG/oldkey.conf" list
+has "and points to the keys directory" "PUBKEY is gone: put the public key file into etc/tatami/keys/"
+mkdir -p "$KEYS"; echo garbage > "$KEYS/garbage.pub"; echo "$PUB" > "$KEYS/.hidden"; mkdir "$KEYS/subdir"
+OUT=$("$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update 2>&1); rc=$?
+[ $rc -ne 0 ] && echo "$OUT" | grep -q "garbage.pub is not a public key" && echo "$OUT" | grep -q "no trusted key" && ok "a file that is not a key is skipped with a warning; dot files and directories are ignored" || bad "garbage key handling (exit $rc)" "$OUT"
 BASE64=$(python3 -c "import base64,sys; print(base64.b64encode(bytes.fromhex(sys.argv[1])).decode())" "$PUB")
-{ echo "PUBKEY = $BASE64"; sed 1d "$SG/ok.conf"; } > "$SG/b64.conf"
-check "PUBKEY may be base64" 0 "$TATAMI" -r "$SG/root" -c "$SG/b64.conf" update
+echo "$BASE64" > "$KEYS/b64.pub"
+check "a key file may hold base64" 0 "$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update
+rm -rf "$KEYS"; restorekeys
+nokeys
 
 # local installations are trusted: no signature, no key, no check
 : > "$FLOG"
-check "a package file is installed without any signature" 0 "$TATAMI" -y -r "$SG/root" -c "$SG/nokey.conf" install "$SG/unsigned/$P"
+check "a package file is installed without any signature" 0 "$TATAMI" -y -r "$SG/root" -c "$SG/ok.conf" install "$SG/unsigned/$P"
 [ -f "$SG/root/usr/share/sg-app/f" ] && ok "installed from a local file" || bad "local file not installed"
-"$TATAMI" -y -r "$SG/root" -c "$SG/nokey.conf" remove sg-app >/dev/null 2>&1
+"$TATAMI" -y -r "$SG/root" -c "$SG/ok.conf" remove sg-app >/dev/null 2>&1
 echo "mine = file://$SG/unsigned" > "$SG/root/etc/tatami/repos.conf"
-"$TATAMI" -r "$SG/root" -c "$SG/nokey.conf" update >/dev/null 2>&1
-check "a file:// repository needs no signature and no PUBKEY" 0 "$TATAMI" -y -r "$SG/root" -c "$SG/nokey.conf" install sg-app
+"$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update >/dev/null 2>&1
+check "a file:// repository needs no signature and no key" 0 "$TATAMI" -y -r "$SG/root" -c "$SG/ok.conf" install sg-app
 echo "mine = $SG/unsigned" > "$SG/root/etc/tatami/repos.conf"
-"$TATAMI" -y -r "$SG/root" -c "$SG/nokey.conf" remove sg-app >/dev/null 2>&1
-check "neither does a plain path repository" 0 "$TATAMI" -y -r "$SG/root" -c "$SG/other.conf" install sg-app
+"$TATAMI" -y -r "$SG/root" -c "$SG/ok.conf" remove sg-app >/dev/null 2>&1
+check "neither does a plain path repository" 0 "$TATAMI" -y -r "$SG/root" -c "$SG/ok.conf" install sg-app
 [ ! -s "$FLOG" ] && ok "no fetch for local repositories" || bad "fetched" "$(cat "$FLOG")"
 echo
 
@@ -1551,7 +1571,7 @@ echo "# HoldPkg: held packages are not upgraded, the others are"
 HP="$T/hold"; rm -rf "$HP"; mkdir -p "$HP/srv/core" "$HP/root/etc/tatami"
 SRVDIR="$HP/srv"; FLOG="$HP/fetch.log"; export SRVDIR FLOG; : > "$FLOG"
 echo "core = https://mirror.test/core" > "$HP/root/etc/tatami/repos.conf"
-printf 'PUBKEY = none\nBULKHEAD = no\nFETCHCMD = sh -c '"'"'cp "$SRVDIR/${0#https://mirror.test/}" "$1"'"'"' %%URL%% %%DEST%%\n' > "$HP/plain.conf"
+printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\nFETCHCMD = sh -c '"'"'cp "$SRVDIR/${0#https://mirror.test/}" "$1"'"'"' %%URL%% %%DEST%%\n' > "$HP/plain.conf"
 cp "$HP/plain.conf" "$HP/hold.conf"
 # the held packages are read from <root>/etc/tatami/hold: hold_with <names...> / hold_none
 hold_with() { printf '%s\n' "$@" > "$HP/root/etc/tatami/hold"; }
@@ -1611,7 +1631,7 @@ mkp "$LC/other" ck-app 1.0 - - usr/share/ck-app/f:substituted
 "$TATAMI" index "$LC/repo" >/dev/null
 CP="ck-app_1.0_${HARCH}.tar.pkg"
 cp "$LC/other/$CP" "$LC/repo/$CP"       # same name and version, other content: the index's SHA-256 is now wrong
-printf 'BULKHEAD = no\nPUBKEY = none\n' > "$LC/c.conf"
+printf 'BULKHEAD = no\nALLOW_UNSIGNED = yes\n' > "$LC/c.conf"
 echo "mine = file://$LC/repo" > "$LC/root/etc/tatami/repos.conf"
 check "a file:// repository whose index has a wrong checksum still installs" 0 "$TATAMI" -y -r "$LC/root" -c "$LC/c.conf" install ck-app
 [ "$(cat "$LC/root/usr/share/ck-app/f")" = substituted ] && ok "the local file was used as it is, no hash check" || bad "unexpected content" "$(cat "$LC/root/usr/share/ck-app/f")"
