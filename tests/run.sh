@@ -442,14 +442,15 @@ mkpkg na-noarch 1.0 arch=noarch file=usr/share/na/noarch
 mkpkg na-any 1.0 arch=any file=usr/share/na/any
 mkpkg na-all 1.0 arch=all file=usr/share/na/all
 mkpkg na-mixed 1.0 arch=NoArch file=usr/share/na/mixed
-mkpkg na-none 1.0 file=usr/share/na/none
+mkpkg arch-explicit 1.0 arch=$HARCH file=usr/share/na/explicit
 mkpkg na-foreign 1.0 arch=riscv64z file=usr/share/na/foreign
-check "noarch, any, all, NoArch and no-arch packages install on this host" 0 ty install na-noarch na-any na-all na-mixed na-none
+check "noarch, any, all, NoArch and explicit host-architecture packages install on this host" 0 ty install na-noarch na-any na-all na-mixed arch-explicit
 exists "noarch installed" usr/share/na/noarch
 exists "any installed" usr/share/na/any
 exists "all installed" usr/share/na/all
 exists "mixed-case NoArch installed" usr/share/na/mixed
-exists "package without arch installed" usr/share/na/none
+exists "package with an explicit host architecture installed" usr/share/na/explicit
+OUT=$(t show arch-explicit 2>&1); has "and it carries the host architecture it was built with" "Architecture *: *$HARCH"
 check "a package for another architecture is still refused" 1 ty install na-foreign
 has "with the architecture message" "incompatible with this system"
 absent "foreign package not installed" usr/share/na/foreign
@@ -1648,7 +1649,7 @@ echo
 echo "# sensible defaults: nothing configured at all"
 DF="$T/defaults"; rm -rf "$DF"; mkdir -p "$DF/recipe" "$DF/out" "$DF/root"
 printf 'name=dflt\nversion=1.0\narch='$HARCH'\nbuild() { mkdir -p "$PKG/usr/bin"; echo hi > "$PKG/usr/bin/dflt"; }\n' > "$DF/recipe/Tatamifile"
-# no config file (-c points nowhere), no PKG_EXT, no compression, no arch in the recipe
+# no config file (-c points nowhere), no PKG_EXT, no compression
 ( cd "$DF/recipe" && env -u PKG_EXT "$TATAMK" -c "$DF/none.conf" --no-bulkhead -o "$DF/out" ) >"$DF/mk.log" 2>&1
 [ -f "$DF/out/dflt_1.0_$HARCH.tar.pkg" ] && ok "default package is <name>_<version>_<arch of the recipe>.tar.pkg" || bad "default package name"
 check "tatami reads the unconfigured package" 0 bash -c "'$TATAMI' -r '$DF/root' -c '$DF/none.conf' show '$DF/out/dflt_1.0_$HARCH.tar.pkg' >/dev/null || true"
