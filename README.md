@@ -46,27 +46,35 @@ cd tatami
 git submodule update --init
 ```
 
-### Choose the paths (optional)
+### Choose the paths and the package extension (optional)
 
-The file [`config.mk`](config.mk) is part of the sources. Edit it directly before building
-to change where things go:
+Before compiling you can edit [`build.conf`](build.conf), a plain text file of `KEY=VALUE`
+lines that comes with the sources:
 
-```make
-# tatami and tatamk go to $(PREFIX)/bin, the manual pages to $(PREFIX)/share/man
-PREFIX ?= /usr
-# configuration: $(SYSCONFDIR)/tatami/
-SYSCONFDIR ?= /etc
-# package database, journal, indexes of remote repositories, local repository
-DB_DIR ?= /var/lib/tatami
-# downloaded packages
-CACHEDIR ?= /var/cache/tatami
+```
+# tatami build configuration
+PREFIX=/usr
+SYSCONFDIR=/etc
+DB_DIR=/var/lib/tatami
+CACHEDIR=/var/cache/tatami
+PKG_EXT=tar.pkg
 ```
 
-`SYSCONFDIR`, `DB_DIR` and `CACHEDIR` are compiled into the binary (always as paths below
-the `--root`), so choose them before you build. The defaults follow the Filesystem
-Hierarchy Standard. Because every line uses `?=`, you can also override them without
-editing the file: `make PREFIX=/opt/tatami`, or `DESTDIR=/tmp/pkg make install` to stage an
-installation.
+| Key | Meaning |
+|---|---|
+| `PREFIX` | `make install` puts `tatami` and `tatamk` in `$(PREFIX)/bin` and the manual pages in `$(PREFIX)/share/man` |
+| `SYSCONFDIR` | configuration directory: `$(SYSCONFDIR)/tatami/` |
+| `DB_DIR` | package database, journal, indexes of remote repositories, local repository |
+| `CACHEDIR` | downloaded packages |
+| `PKG_EXT` | default package file extension (no leading dot); empty means `tar.<compression>` |
+
+Write one `KEY=VALUE` per line, with no spaces around `=` and comments on lines of their
+own. A key you delete simply gets its default. `SYSCONFDIR`, `DB_DIR`, `CACHEDIR` and
+`PKG_EXT` are compiled into the programs (the three directories always as paths below the
+`--root`), so change them **before** you build; they must be absolute paths. The `make`
+command line still wins over the file: `make PREFIX=/opt/tatami`, and
+`make DESTDIR=/tmp/pkg install` stages an installation. `make clean` never touches
+`build.conf`.
 
 ### Build and install
 

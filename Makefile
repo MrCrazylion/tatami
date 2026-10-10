@@ -2,11 +2,11 @@
 #  tatami - a package manager in the spirit of pkgutils
 #
 
-# Build-time configuration. Settings can come from (highest priority first) the
-# make command line, the config.mk next to this Makefile (edit it),
-# the environment, and the defaults below. Example:
+# Build-time configuration. build.conf holds plain KEY=VALUE lines (edit it before
+# building); a value there beats the defaults below, and the make command line
+# beats both. Example:
 #   make SYSCONFDIR=/opt/etc DB_DIR=/opt/var/lib/tatami PREFIX=/opt
--include config.mk
+-include build.conf
 
 # Where 'make install' puts things
 DESTDIR ?=
@@ -25,6 +25,13 @@ CACHEDIR ?= /var/cache/tatami
 ETCDIR ?= $(SYSCONFDIR)
 VARDIR ?= $(DB_DIR)
 
+# a blank left at the end of a line of build.conf must not end up in a path
+DESTDIR := $(strip $(DESTDIR))
+PREFIX := $(strip $(PREFIX))
+SYSCONFDIR := $(strip $(SYSCONFDIR))
+DB_DIR := $(strip $(DB_DIR))
+CACHEDIR := $(strip $(CACHEDIR))
+
 # They must be absolute and plain: they are put into C string literals and a sed script
 $(foreach v,SYSCONFDIR DB_DIR CACHEDIR, \
   $(if $(filter /%,$($(v))),,$(error $(v) must be an absolute path, not '$($(v))')) \
@@ -40,7 +47,7 @@ VERSION = 0.1.0
 NAME = tatami-$(VERSION)
 
 # Packages are named <name>_<version>-<release>_<arch>.<extension>. The default
-# extension is tar.pkg (set in config.mk; the compression inside is detected from the
+# extension is tar.pkg (set in build.conf; the compression inside is detected from the
 # content). An empty PKG_EXT means tar.<compression> (tar.zst, tar.xz, ...), all of
 # which tatami then accepts. Another extension for both tools:
 #   make PKG_EXT=myext
@@ -48,6 +55,7 @@ NAME = tatami-$(VERSION)
 # It can still be overridden when running: PKG_EXT in /etc/tatami/tatami.conf (both
 # tools) and, for tatamk only, the PKG_EXT environment variable.
 PKG_EXT ?= tar.pkg
+PKG_EXT := $(strip $(PKG_EXT))
 ifneq ($(shell printf '%s' '$(PKG_EXT)' | tr -d 'A-Za-z0-9._-'),)
 $(error PKG_EXT may only contain letters, digits, '.', '_' and '-')
 endif
@@ -313,7 +321,7 @@ install: all
 
 # 'clean' removes what this project built (objects, dependency files, binaries) but
 # keeps the slow-to-rebuild vendored libraries; 'distclean' resets them too.
-# config.mk is yours and is never removed.
+# build.conf is yours and is never removed.
 clean:
 	rm -f src/*.o src/*.d tatami tatamk .flags
 

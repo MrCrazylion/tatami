@@ -4,7 +4,7 @@
 // Locations below the installation root (--root). All of them are resolved
 // with root_resolve(), so they stay inside the root whatever its symlinks say.
 
-// The base directories can be chosen at build time (config.mk or the make command
+// The base directories can be chosen at build time (build.conf or the make command
 // line: SYSCONFDIR, DB_DIR, CACHEDIR). The Makefile passes them as
 // TATAMI_SYSCONFDIR, TATAMI_DB_DIR and TATAMI_CACHEDIR, always relative to the root
 // (no leading slash). Without them these are the defaults.
