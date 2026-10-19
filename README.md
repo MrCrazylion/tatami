@@ -87,8 +87,9 @@ into the programs (the three directories always as paths below the `--root`), so
 **before** you build; the directories must be absolute paths. A value in `build.conf` beats
 an environment variable of the same name, and the `make` command line beats both:
 `make PREFIX=/opt/tatami`; `make DESTDIR=/tmp/pkg install` stages an installation. `make
-clean` never touches `build.conf`. `PKG_EXT` and `PKG_COMPRESSION` can still be changed at run
-time in `tatami.conf` (see below).
+clean` never touches `build.conf`. `PKG_EXT` and `PKG_COMPRESSION` exist **only** here: they
+are fixed when tatami is built and cannot be changed at run time (`tatami.conf` refuses them),
+which keeps every package in a repository named and compressed the same way.
 
 ### Build and install
 
@@ -124,15 +125,11 @@ Packages are named `<name>_<version>-<release>_<arch>.<extension>`, for example
 `zlib_1.3.2-1_x86_64.tar.pkg`. The default extension is `tar.pkg`; the compression inside
 is detected from the content, so it does not appear in the name.
 
-```ini
-# Compression used by tatamk: gz, zst (default), xz, bz2, lz4, lzma or none.
-PKG_COMPRESSION = zst
-
-# The package file extension (default: tar.pkg). The compression inside is detected
-# from the content. An empty value ("PKG_EXT =") means tar.<compression> instead
-# (tar.zst, tar.xz, ...), and every compression is then accepted.
-PKG_EXT = tar.pkg
-```
+The extension and the compression are decided when tatami is built (`PKG_EXT` and
+`PKG_COMPRESSION` in `build.conf`, see above) and are not configurable afterwards: putting
+either in `tatami.conf` is an error. An empty `PKG_EXT` means `tar.<compression>` (`tar.zst`,
+`tar.xz`, ...), and every compression is then accepted. The only run-time choice is
+`tatamk -z <compression>`, for one build.
 
 All compression formats are read and written by tatami itself.
 
@@ -152,8 +149,8 @@ FETCHCMD = curl -f -L -# "%URL%" -o "%DEST%"
 
 ### One file per job
 
-`tatami.conf` holds the engine settings only: `FETCHCMD`, `ALLOW_UNSIGNED`, `PKG_EXT`,
-`PKG_COMPRESSION` and `BULKHEAD`. Everything else has its own plain-text file in
+`tatami.conf` holds the engine settings only: `FETCHCMD`, `ALLOW_UNSIGNED`, `BULKHEAD`
+and the `REPO_DIRS` fallback. Everything else has its own plain-text file in
 `/etc/tatami`, and every one of them may be missing:
 
 | File | Content |

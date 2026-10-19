@@ -39,14 +39,13 @@ struct rule_t {
 };
 
 struct config_t {
-	string pkg_ext;                 // without leading dot, empty: tar.<compression>
+	string pkg_ext;                 // DEFAULT_PKG_EXT, fixed at build time; empty: tar.<compression>
 	vector<string> repo_dirs;       // directories scanned by 'tatami update'
 	vector<string> hold_pkgs;       // etc/tatami/hold: installed packages that are never upgraded or removed by a transaction
 	string fetchcmd;                // downloads remote repositories (FETCHCMD)
 	bool allow_unsigned;            // ALLOW_UNSIGNED: remote data without signatures is accepted
 	vector<pubkey_t> trusted_keys;  // the files of etc/tatami/keys: a signature by any of them is good
 	string bulkhead;                // tatamk only: "yes" or "no" (build isolation)
-	string compression;             // used by tatamk only: gz, xz, zst, bz2 or none
 	vector<rule_t> rules;           // etc/tatami/upgrade.rules: UPGRADE/INSTALL rules
 };
 

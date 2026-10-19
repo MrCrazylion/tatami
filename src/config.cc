@@ -25,20 +25,6 @@ config_t default_config()
 	return cfg;
 }
 
-static string check_ext(const string& value, const string& where)
-{
-	string ext = value;
-
-	while (!ext.empty() && ext[0] == '.')
-		ext.erase(0, 1);
-
-	if (ext.find_first_not_of(
-	    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != string::npos)
-		throw runtime_error(where + "invalid PKG_EXT '" + value + "'");
-
-	return ext;
-}
-
 config_t read_config(const string& filename, bool required)
 {
 	config_t cfg = default_config();
@@ -75,8 +61,9 @@ config_t read_config(const string& filename, bool required)
 		if (is_setting) {
 			const string value = unquote(trim(line.substr(eq + 1)));
 
-			if (key == "PKG_EXT") {
-				cfg.pkg_ext = check_ext(value, where);
+			if (key == "PKG_EXT" || key == "PKG_COMPRESSION") {
+				throw runtime_error(where + key + " is a compile-time setting and can no longer be set here: "
+						    "set it in build.conf (or 'make " + key + "=...') and rebuild");
 			} else if (key == "REPO_DIRS") {
 				if (!repos_set)
 					cfg.repo_dirs.clear();
@@ -105,10 +92,6 @@ config_t read_config(const string& filename, bool required)
 				if (value != "yes" && value != "no")
 					throw runtime_error(where + "invalid BULKHEAD '" + value + "', should be yes or no");
 				cfg.bulkhead = value;
-			} else if (key == "PKG_COMPRESSION") {
-				if (value != "gz" && value != "xz" && value != "zst" && value != "bz2" && value != "lz4" && value != "lzma" && value != "none")
-					throw runtime_error(where + "invalid PKG_COMPRESSION '" + value + "'");
-				cfg.compression = value;
 			} else if (key == "HoldPkg" || key == "HOLDPKG") {
 				throw runtime_error(where + "HoldPkg moved to " + HOLD_FILE + ", one package name per line");
 			} else if (key == "ARCH") {

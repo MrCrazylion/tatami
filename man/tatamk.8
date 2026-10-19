@@ -164,11 +164,11 @@ One of
 .B lzma
 or
 .BR none .
-The default is
-.B PKG_COMPRESSION
-from the configuration file, else the one chosen when tatami was built
-.RB ( zst
+The default is the one chosen when tatami was built
+.RB ( PKG_COMPRESSION ,
+.B zst
 unless changed), unless the package extension itself names one.
+It cannot be set in the configuration or the environment.
 Compression is done by tatami itself.
 .TP
 .BR \-k ", " \-\-keep\-work
@@ -215,11 +215,6 @@ The tatami binary used for packing, indexing, signing and the sandbox
 .TP
 .B TATAMI_PRIVKEY
 The signing key.
-.TP
-.B PKG_EXT
-Use this package extension instead of the configured one
-(default
-.BR tar.pkg ).
 .SH FILES
 .TP
 .B Tatamifile
@@ -233,12 +228,9 @@ Optional install script, bundled as
 Optional checksums of the sources.
 .TP
 .B /etc/tatami/tatami.conf
-Configuration (the keys
-.BR PKG_EXT ,
-.BR PKG_COMPRESSION
-and
-.BR BULKHEAD
-are used).
+Configuration (only the key
+.B BULKHEAD
+is used; the package extension and compression are fixed when tatami is built).
 .TP
 .B ~/.tatami/privkey
 The default signing key.

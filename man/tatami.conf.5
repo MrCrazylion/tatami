@@ -47,34 +47,6 @@ and
 and rule lines, are refused with a message naming the new place.
 .SH SETTINGS
 .TP
-.B PKG_EXT
-The package file extension, without the leading dot.
-The default is
-.BR tar.pkg .
-The compression inside a package is detected from its content, so it does not matter.
-An empty value
-.RB ( "PKG_EXT =" )
-selects
-.B tar.\fIcompression\fR
-(such as
-.BR tar.zst )
-instead, and every compression is then accepted.
-.TP
-.B PKG_COMPRESSION
-.BR tatamk 's
-compression: one of
-.BR gz ,
-.BR zst ,
-.BR xz ,
-.BR bz2 ,
-.BR lz4 ,
-.B lzma
-or
-.BR none .
-The default is the one chosen when tatami was built
-.RB ( zst
-unless changed).
-.TP
 .B REPO_DIRS
 Repositories as paths or URLs separated by blanks, used when no
 .B repos.conf
@@ -124,6 +96,36 @@ whether
 builds in a
 .BR bwrap (1)
 sandbox.
+.SH FIXED AT BUILD TIME
+The package extension
+.RB ( PKG_EXT ,
+default
+.BR tar.pkg )
+and the compression of
+.BR tatamk
+.RB ( PKG_COMPRESSION ,
+default
+.BR zst )
+are set in
+.B build.conf
+(or with
+.BR "make PKG_EXT=..." )
+when tatami is compiled and cannot be changed afterwards.
+.B PKG_EXT
+or
+.B PKG_COMPRESSION
+in
+.B tatami.conf
+is an error, and the environment is ignored by
+.BR tatamk ;
+only
+.B tatamk \-z
+overrides the compression, for one build.
+An empty
+.B PKG_EXT
+means
+.B tar.\fIcompression\fR
+and every compression is accepted.
 .SH ARCHITECTURE
 There is no setting for it: tatami uses the machine architecture
 .RB ( "uname \-m" ).
@@ -342,7 +344,7 @@ Repository lists (definitions only).
 Hooks.
 .SH EXAMPLE
 .nf
-PKG_COMPRESSION = zst
+ALLOW_UNSIGNED = no
 .fi
 .PP
 in

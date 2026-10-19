@@ -28,9 +28,8 @@
 #
 
 TATAMI_CONF="@SYSCONFDIR@/tatami/tatami.conf"   # build-time SYSCONFDIR
-ENV_PKG_EXT="${PKG_EXT-}"      # run-time override from the environment
-PKG_EXT="@DEFAULT_PKG_EXT@"    # build-time default (make PKG_EXT=...)
-DEFAULT_COMPRESSION="@DEFAULT_PKG_COMPRESSION@"    # build-time default (make PKG_COMPRESSION=...)
+PKG_EXT="@DEFAULT_PKG_EXT@"    # fixed at build time (build.conf or make PKG_EXT=...)
+DEFAULT_COMPRESSION="@DEFAULT_PKG_COMPRESSION@"    # fixed at build time (build.conf or make PKG_COMPRESSION=...); -z overrides it
 
 info() { echo "=======> $1"; }
 error() { echo "=======> ERROR: $1" >&2; }
@@ -50,8 +49,7 @@ print_help() {
 	echo "      --no-sign         do not sign the package even if a signing key exists"
 	echo "  -v, --version         print version and exit"
 	echo "packages are named <name>_<version>-<release>_<arch>.<extension>; the extension is"
-	echo "tar.<compression> if PKG_EXT is empty (default '@DEFAULT_PKG_EXT@', then the configuration"
-	echo "file, then the PKG_EXT environment variable)"
+	echo "tar.<compression> if PKG_EXT is empty (fixed when tatami was built: '@DEFAULT_PKG_EXT@')"
 	echo "  -h, --help            print help and exit"
 	echo "signing: if \$TATAMI_PRIVKEY or ~/.tatami/privkey exists (see 'tatami keygen'), the"
 	echo "package is signed (<package>.sig) and the output directory's repo.solv is updated"
@@ -102,20 +100,9 @@ done
 
 [ -r "$RECIPE" ] || die "recipe '$RECIPE' not found"
 
-# Package extension: build-time default, then tatami.conf, then the environment
-# (an explicit empty "PKG_EXT =" in the configuration selects tar.<compression>)
-if [ -r "$TATAMI_CONF" ] && grep -q '^PKG_EXT[[:space:]]*=' "$TATAMI_CONF"; then
-	v=$(conf_get PKG_EXT)
-	PKG_EXT="${v#.}"
-fi
-[ -n "$ENV_PKG_EXT" ] && PKG_EXT="${ENV_PKG_EXT#.}"
-case "$PKG_EXT" in
-*[!A-Za-z0-9._-]*) die "invalid PKG_EXT '$PKG_EXT'" ;;
-esac
-
-# Compression: option, then tatami.conf, then what a configured extension ends in, then the build-time default (zstd).
+# Compression: the -z option, then what the build-time extension ends in, then the build-time default.
 # It is done by 'tatami pack' with libarchive: no tar or compression program is used.
-COMPRESSION="${COMPRESSION_OPT:-$(conf_get PKG_COMPRESSION)}"
+COMPRESSION="$COMPRESSION_OPT"
 if [ -z "$COMPRESSION" ]; then
 	case "$PKG_EXT" in
 	*gz) COMPRESSION=gz ;;
@@ -131,7 +118,7 @@ case "$COMPRESSION" in
 gz|xz|zst|bz2|lz4|lzma|none) ;;
 *) die "invalid compression '$COMPRESSION' (use gz, zst, xz, bz2, lz4, lzma or none)" ;;
 esac
-# The file extension: the configured one, or tar.<compression>
+# The file extension: the build-time one, or tar.<compression> if that is empty
 if [ -n "$PKG_EXT" ]; then
 	PKG_EXTENSION="$PKG_EXT"
 elif [ "$COMPRESSION" = none ]; then

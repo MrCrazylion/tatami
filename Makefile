@@ -53,14 +53,13 @@ NAME = tatami-$(VERSION)
 # which tatami then accepts. Another extension for both tools:
 #   make PKG_EXT=myext
 # tatami gets it as -DDEFAULT_PKG_EXT, tatamk as the @DEFAULT_PKG_EXT@ substitution.
-# It can still be overridden when running: PKG_EXT in /etc/tatami/tatami.conf (both
-# tools) and, for tatamk only, the PKG_EXT environment variable.
+# It is fixed: there is no run-time override (tatami.conf refuses PKG_EXT).
 PKG_EXT ?= tar.pkg
 PKG_EXT := $(strip $(PKG_EXT))
 
-# The compression tatamk uses unless -z, PKG_COMPRESSION in tatami.conf or a PKG_EXT
-# that names one says otherwise: gz, zst, xz, bz2, lz4, lzma or none. tatamk gets it as
-# the @DEFAULT_PKG_COMPRESSION@ substitution.
+# The compression tatamk uses unless -z or a PKG_EXT that names one says otherwise:
+# gz, zst, xz, bz2, lz4, lzma or none. tatamk gets it as the
+# @DEFAULT_PKG_COMPRESSION@ substitution; there is no run-time setting for it.
 PKG_COMPRESSION ?= zst
 PKG_COMPRESSION := $(strip $(PKG_COMPRESSION))
 ifeq ($(filter $(PKG_COMPRESSION),gz zst xz bz2 lz4 lzma none),)

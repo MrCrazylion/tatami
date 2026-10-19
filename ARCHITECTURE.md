@@ -250,9 +250,8 @@ with pacman's `IgnorePkg`). Held packages that are not installed are ignored.
 
 ### Where things are configured
 
-- `/etc/tatami/tatami.conf` — engine settings only (`PKG_EXT`, `PKG_COMPRESSION`,
-  `FETCHCMD`, `ALLOW_UNSIGNED`, `BULKHEAD`, and the `REPO_DIRS` fallback). Missing, empty or
-  unreadable is fine: the built-in defaults apply. The old `ARCH`, `HoldPkg` and rule lines
+- `/etc/tatami/tatami.conf` — engine settings only (`FETCHCMD`, `ALLOW_UNSIGNED`, `BULKHEAD`, and the `REPO_DIRS` fallback). Missing, empty or
+  unreadable is fine: the built-in defaults apply. The old `ARCH`, `HoldPkg`, `PUBKEY`, `PKG_EXT`, `PKG_COMPRESSION` and rule lines
   are refused with a message that names their new home.
 - `/etc/tatami/repos.conf`, `repos.d/*.conf` — repository definitions and nothing else
   (no `FETCHCMD`, no `ALLOW_UNSIGNED`: those are engine settings).
@@ -268,7 +267,7 @@ with pacman's `IgnorePkg`). Held packages that are not installed are ignored.
   override a default, uncomment and edit its line. The `make` command line beats both.
   `SYSCONFDIR`, `DB_DIR` and `CACHEDIR` are validated and compiled in as paths *below the
   root*, so a custom layout still works with `--root`; `PKG_EXT` is compiled into tatami and
-  substituted into `tatamk`, as is `PKG_COMPRESSION`; `PREFIX`, `BINDIR`, `MANDIR` and
+  substituted into `tatamk`, as is `PKG_COMPRESSION`; **both are compile-time only** (`tatami.conf` refuses them, `tatamk` ignores the environment, only `tatamk -z` overrides the compression); `PREFIX`, `BINDIR`, `MANDIR` and
   `DESTDIR` control `make install`. The layout defaults to the FHS: `/etc/tatami`,
   `/var/lib/tatami`, `/var/cache/tatami`.
 
@@ -295,7 +294,7 @@ build() {
 }
 ```
 
-The result is `<name>_<version>-<release>_<arch>.<extension>`, by default `tar.pkg` (the compression inside is detected from the content; an empty `PKG_EXT` gives `tar.<compression>` instead), for example
+The result is `<name>_<version>-<release>_<arch>.<extension>`, by default `tar.pkg` (fixed at build time; the compression inside is detected from the content; an empty `PKG_EXT` gives `tar.<compression>` instead), for example
 `zlib_1.3.2-1_x86_64.tar.pkg`. Names and versions may not contain `_`, so the first two
 underscores are the separators. Sources are downloaded next to the recipe, checked
 against `.md5sum` if present, and unpacked. **Packing is done by `tatami pack`
