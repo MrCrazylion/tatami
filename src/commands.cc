@@ -630,6 +630,83 @@ void cmd_index(context& ctx)
 	}
 }
 
+// Trust on first use. A remote repository <name> is trusted through the key file
+// <root>/etc/tatami/keys/<name>.pub. When that file is missing, the key is fetched
+// (over https only) from <repo url>/tatami.pub into a quarantine file and is only
+// trusted if it verifies the index of that very repository; then it is moved into
+// the key store.
+string quarantine_path(const context& ctx, const repo_spec& r)
+{
+	return root_resolve(ctx.opt.root, TATAMI_CACHEDIR) + "/" + r.name + "_quarantine.pub";
+}
+
+string repo_key_path(const context& ctx, const repo_spec& r)
+{
+	return root_resolve(ctx.opt.root, KEYS_DIR) + "/" + r.name + ".pub";
+}
+
+// Downloads <url>/tatami.pub to the quarantine file and decodes it
+pubkey_t fetch_quarantine_key(const context& ctx, const repo_spec& r, const string& quarantine)
+{
+	if (!starts_with(r.url, "https://"))
+		throw runtime_error("repository " + r.name + " has no key in /" KEYS_DIR "/" + r.name + ".pub and " + r.url +
+				    " is not an https:// URL: a key is only fetched automatically over HTTPS, "
+				    "so copy the repository's public key to that file by hand");
+
+	mkdir_p(root_resolve(ctx.opt.root, TATAMI_CACHEDIR));
+	unlink(quarantine.c_str());
+	try {
+		fetch_url(ctx.cfg.fetchcmd, r.url + "/tatami.pub", quarantine);
+	} catch (runtime_error& e) {
+		unlink(quarantine.c_str());
+		throw runtime_error("could not fetch the public key " + r.url + "/tatami.pub: " + e.what() +
+				    " (or put the key into /" KEYS_DIR "/" + r.name + ".pub)");
+	}
+
+	pubkey_t key;
+	key.file = quarantine;
+	string text;
+	{
+		ifstream in(quarantine.c_str());
+		getline(in, text);
+	}
+	if (text.size() > 256 || !decode_pubkey(text, key.bytes)) {
+		unlink(quarantine.c_str());
+		throw runtime_error(r.url + "/tatami.pub is not a public key (64 hex digits or base64)");
+	}
+	return key;
+}
+
+// Moves the verified key into the key store, atomically: it is first copied to a
+// hidden name in the store (the key loader ignores those), so that the final
+// rename() stays on one filesystem, and is then renamed into place.
+void trust_quarantine_key(const context& ctx, const repo_spec& r, const string& quarantine, const pubkey_t& key)
+{
+	const string dir = root_resolve(ctx.opt.root, KEYS_DIR);
+	const string target = repo_key_path(ctx, r);
+	const string tmp = dir + "/." + r.name + ".pub.new";
+
+	mkdir_p(dir);
+	unlink(tmp.c_str());
+	const string text = hex_encode(key.bytes, 32) + "\n";
+	const int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
+	if (fd == -1)
+		throw runtime_error_with_errno("could not write " + tmp, errno);
+	const bool ok = write(fd, text.data(), text.size()) == (ssize_t)text.size() && fsync(fd) == 0;
+	close(fd);
+	if (!ok) {
+		unlink(tmp.c_str());
+		throw runtime_error("could not write " + tmp);
+	}
+	if (rename(tmp.c_str(), target.c_str()) == -1) {
+		const int e = errno;
+		unlink(tmp.c_str());
+		throw runtime_error_with_errno("could not install the key " + target, e);
+	}
+	unlink(quarantine.c_str());
+	cout << "Trusted new key for repository " << r.name << endl;
+}
+
 // Downloads the repo.solv of a remote repository into the cache
 void update_remote(const context& ctx, const repo_spec& r)
 {
@@ -637,20 +714,32 @@ void update_remote(const context& ctx, const repo_spec& r)
 	const string part = solv + ".part";
 
 	mkdir_p(r.dir);
-	require_pubkey(ctx, r);
-	fetch_url(ctx.cfg.fetchcmd, r.url + "/repo.solv", part, true);
 
-	// the signature comes first: an index that does not verify is never looked at
 	const bool check_sig = signatures_wanted(ctx);
-	if (check_sig) {
-		try {
+	const bool new_key = check_sig && r.name[0] != '.' && !file_exists(repo_key_path(ctx, r));
+	const string quarantine = quarantine_path(ctx, r);
+	vector<pubkey_t> proof_keys = ctx.cfg.trusted_keys;     // what the index is verified against
+
+	if (new_key) {
+		// the key first; if there is none (or no https), nothing else is fetched
+		proof_keys.assign(1, fetch_quarantine_key(ctx, r, quarantine));
+	} else {
+		require_pubkey(ctx, r);
+	}
+
+	// the index; the signature comes first: an index that does not verify is never looked at
+	try {
+		fetch_url(ctx.cfg.fetchcmd, r.url + "/repo.solv", part, true);
+		if (check_sig) {
 			fetch_signature(ctx, r.url + "/repo.solv", part + ".sig");
-			verify_file(part, part + ".sig", ctx.cfg.trusted_keys);
-		} catch (runtime_error&) {
-			unlink(part.c_str());
-			unlink((part + ".sig").c_str());
-			throw;
+			verify_file(part, part + ".sig", proof_keys);
 		}
+	} catch (runtime_error&) {
+		unlink(part.c_str());
+		unlink((part + ".sig").c_str());
+		if (new_key)
+			unlink(quarantine.c_str());
+		throw;
 	}
 
 	// whatever came back must be a real index (without -f curl saves error pages too)
@@ -660,7 +749,21 @@ void update_remote(const context& ctx, const repo_spec& r)
 	} catch (runtime_error& e) {
 		unlink(part.c_str());
 		unlink((part + ".sig").c_str());
+		if (new_key)
+			unlink(quarantine.c_str());
 		throw runtime_error(r.url + "/repo.solv is not a valid index: " + e.what());
+	}
+
+	// the proof held: the key is trusted from now on, then the index is committed
+	if (new_key) {
+		try {
+			trust_quarantine_key(ctx, r, quarantine, proof_keys[0]);
+		} catch (runtime_error&) {
+			unlink(part.c_str());
+			unlink((part + ".sig").c_str());
+			unlink(quarantine.c_str());
+			throw;
+		}
 	}
 	// the signature is stored first: an index without its signature is never trusted
 	if (check_sig && rename((part + ".sig").c_str(), (solv + ".sig").c_str()) == -1) {

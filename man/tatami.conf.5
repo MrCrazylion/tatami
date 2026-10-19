@@ -228,6 +228,24 @@ is set in
 The former
 .B PUBKEY
 setting is refused with a message that names the directory.
+.PP
+If a remote repository
+.I name
+has no key file
+.BI /etc/tatami/keys/ name .pub ,
+.B tatami update
+fetches
+.IB url /tatami.pub
+(only over
+.BR https:// )
+into a quarantine file and trusts it, as
+.IB name .pub,
+only if it verifies the signature of that repository's
+.BR repo.solv .
+This is trust on first use: it proves that the key and the index belong together, not who
+published them.
+If the key cannot be fetched, the repository is skipped with a warning; if the signature does not verify,
+the update aborts.
 .SH REPOSITORIES
 Repositories are listed in
 .B /etc/tatami/repos.conf

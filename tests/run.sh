@@ -1428,7 +1428,7 @@ P="sg-app_1.0_${HARCH}.tar.pkg"
 ( cd "$SG" && TATAMI_PRIVKEY="$SG/missing" "$TATAMK" -c "$TCONF" -f "$SG/Tatamifile" -o "$SG/x" ) > "$SG/mk4.log" 2>&1 && bad "a missing TATAMI_PRIVKEY was ignored" || ok "TATAMI_PRIVKEY that does not exist is an error"
 
 # remote repository with a trusted key in etc/tatami/keys: everything fetched is verified
-KEYS="$SG/root/etc/tatami/keys"; mkdir -p "$KEYS"; cp "$SG/home/.tatami/privkey.pub" "$KEYS/author.pub"
+KEYS="$SG/root/etc/tatami/keys"; mkdir -p "$KEYS"; cp "$SG/home/.tatami/privkey.pub" "$KEYS/core.pub"
 nokeys() { rm -rf "$KEYS.off"; mv "$KEYS" "$KEYS.off"; }
 restorekeys() { rm -rf "$KEYS"; mv "$KEYS.off" "$KEYS"; }
 cat > "$SG/ok.conf" <<'CONF'
@@ -1461,10 +1461,10 @@ sr -y remove sg-app >/dev/null 2>&1
 
 # a different key, a tampered package, a missing signature: all refused
 HOME="$SG/home2" "$TATAMI" keygen >/dev/null
-nokeys; mkdir -p "$KEYS"; cp "$SG/home2/.tatami/privkey.pub" "$KEYS/other.pub"
+nokeys; mkdir -p "$KEYS"; cp "$SG/home2/.tatami/privkey.pub" "$KEYS/core.pub"
 OUT=$("$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update 2>&1); rc=$?
 [ $rc -ne 0 ] && echo "$OUT" | grep -q "SIGNATURE VERIFICATION FAILED" && ok "update aborts when the index is signed with another key" || bad "wrong key accepted (exit $rc)" "$OUT"
-cp "$SG/home/.tatami/privkey.pub" "$KEYS/author.pub"
+cp "$SG/home/.tatami/privkey.pub" "$KEYS/second.pub"
 check "with both keys in the directory the signature of either is good" 0 "$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update
 restorekeys
 cp "$SG/root/var/lib/tatami/repos/core/repo.solv" "$SG/good.solv"
@@ -1499,26 +1499,59 @@ OUT=$(sr list --available 2>&1); rc=$?
 echo "$OUT" | grep -q "ignoring repository core: SIGNATURE VERIFICATION FAILED" && ! echo "$OUT" | grep -q "sg-app" && ok "a tampered cached index is ignored with a warning, its packages are not offered" || bad "tampered cache used (exit $rc)" "$OUT"
 cp "$SG/good.solv" "$SG/root/var/lib/tatami/repos/core/repo.solv"
 
-# no key in etc/tatami/keys: remote data is refused unless ALLOW_UNSIGNED = yes
-nokeys
+# no key in etc/tatami/keys: the key is looked for at <repo url>/tatami.pub (https only)
+nokeys; : > "$FLOG"; rm -f "$SG/srv/core/tatami.pub"
 OUT=$("$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update 2>&1); rc=$?
-[ $rc -ne 0 ] && echo "$OUT" | grep -q "no trusted key in /etc/tatami/keys" && ok "a remote repository without a trusted key is refused" || bad "unauthenticated update (exit $rc)" "$OUT"
+echo "$OUT" | grep -q "could not fetch the public key https://mirror.test/core/tatami.pub" && ok "no key and none on the server: the repository is skipped with a clear message" || bad "missing tatami.pub (exit $rc)" "$OUT"
+cmp -s "$SG/good.solv" "$SG/root/var/lib/tatami/repos/core/repo.solv" && [ ! -e "$KEYS/core.pub" ] && [ -z "$(ls "$SG/root/var/cache/tatami" 2>/dev/null | grep quarantine)" ] && ok "nothing was trusted, replaced or left in quarantine" || bad "state after a missing key"
+grep -q "repo.solv" "$FLOG" && bad "the index was fetched although there was no key" "$(cat "$FLOG")" || ok "and the index was not even downloaded"
 OUT=$("$TATAMI" -r "$SG/root" -c "$SG/ok.conf" list --available 2>&1); rc=$?
 echo "$OUT" | grep -q "ignoring repository core: .*no trusted key" && ! echo "$OUT" | grep -q "sg-app" && ok "its cached index is ignored too, not used unauthenticated" || bad "cache used without a key (exit $rc)" "$OUT"
-{ cat "$SG/ok.conf"; echo "ALLOW_UNSIGNED = yes"; } > "$SG/allow.conf"
+# plain http: the key is never fetched automatically
+echo "core = http://mirror.test/core" > "$SG/root/etc/tatami/repos.conf"; : > "$FLOG"
+OUT=$("$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update 2>&1); rc=$?
+echo "$OUT" | grep -q "only fetched automatically over HTTPS" && ok "an http:// repository is refused for auto-fetching, with the reason" || bad "http key fetch (exit $rc)" "$OUT"
+[ ! -s "$FLOG" ] && ok "nothing was downloaded" || bad "http repository fetched" "$(cat "$FLOG")"
+echo "core = https://mirror.test/core" > "$SG/root/etc/tatami/repos.conf"
+# a key that is not a key
+echo "not a key" > "$SG/srv/core/tatami.pub"
+OUT=$("$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update 2>&1)
+echo "$OUT" | grep -q "tatami.pub is not a public key" && [ ! -e "$KEYS/core.pub" ] && ok "a tatami.pub that is not a key is rejected" || bad "garbage tatami.pub" "$OUT"
+# a key that does not match the index: the proof fails, nothing is kept
+cp "$SG/home2/.tatami/privkey.pub" "$SG/srv/core/tatami.pub"
+OUT=$("$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update 2>&1); rc=$?
+[ $rc -ne 0 ] && echo "$OUT" | grep -q "SIGNATURE VERIFICATION FAILED" && ok "a fetched key that did not sign the index aborts with a security error" || bad "mismatching key accepted (exit $rc)" "$OUT"
+[ ! -e "$KEYS/core.pub" ] && [ -z "$(ls -A "$SG/root/var/cache/tatami" 2>/dev/null | grep quarantine)" ] && [ -z "$(ls "$SG/root/var/lib/tatami/repos/core" | grep part)" ] && ok "the quarantine key and the .part files are deleted, no key trusted" || bad "leftovers after a failed proof" "$(find "$SG/root/var" -name '*quarantine*' -o -name '*.part*')"
+cmp -s "$SG/good.solv" "$SG/root/var/lib/tatami/repos/core/repo.solv" && ok "the previous index is kept" || bad "index replaced"
+# the right key: the proof holds, the key is trusted, the index committed
+cp "$SG/home/.tatami/privkey.pub" "$SG/srv/core/tatami.pub"; : > "$FLOG"
+OUT=$("$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update 2>&1); rc=$?
+[ $rc -eq 0 ] && echo "$OUT" | grep -qx "Trusted new key for repository core" && ok "a key that signed the index is trusted: 'Trusted new key for repository core'" || bad "key not trusted (exit $rc)" "$OUT"
+echo "$OUT" | grep -q "$PUB" && bad "the fingerprint was printed" "$OUT" || ok "without printing the key"
+[ "$(cat "$KEYS/core.pub")" = "$PUB" ] && [ "$(stat -c %a "$KEYS/core.pub")" = 644 ] && ok "etc/tatami/keys/core.pub holds the key" || bad "key file" "$(cat "$KEYS/core.pub" 2>&1)"
+[ -z "$(ls -A "$KEYS" | grep '^\.')" ] && [ -z "$(ls -A "$SG/root/var/cache/tatami" 2>/dev/null | grep quarantine)" ] && ok "no temporary or quarantine file is left" || bad "temporary files left" "$(ls -A "$KEYS")"
+grep -q "tatami.pub" "$FLOG" && grep -q "repo.solv.sig" "$FLOG" && ok "the key came through FETCHCMD, with the index" || bad "fetch log" "$(cat "$FLOG")"
+: > "$FLOG"; check "the next update uses the stored key" 0 "$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update
+grep -q "tatami.pub" "$FLOG" && bad "the key was fetched again" || ok "tatami.pub is not fetched again"
+check "and installing works with it" 0 "$TATAMI" -y -r "$SG/root" -c "$SG/ok.conf" install sg-app
+"$TATAMI" -y -r "$SG/root" -c "$SG/ok.conf" remove sg-app >/dev/null 2>&1
+rm -f "$SG/srv/core/tatami.pub"; nokeys
+{ cat "$SG/ok.conf"; echo "ALLOW_UNSIGNED = yes"; } > "$SG/allow.conf"; : > "$FLOG"
 check "ALLOW_UNSIGNED = yes accepts it without a key" 0 "$TATAMI" -r "$SG/root" -c "$SG/allow.conf" update
+grep -q "tatami.pub" "$FLOG" && bad "a key was fetched although unsigned data is allowed" || ok "and no key is fetched then"
 { cat "$SG/ok.conf"; echo "ALLOW_UNSIGNED = no"; } > "$SG/disallow.conf"
-check "ALLOW_UNSIGNED = no is the default" 1 "$TATAMI" -r "$SG/root" -c "$SG/disallow.conf" update
+OUT=$("$TATAMI" -r "$SG/root" -c "$SG/disallow.conf" update 2>&1)
+echo "$OUT" | grep -q "could not fetch the public key" && ok "ALLOW_UNSIGNED = no is the default" || bad "ALLOW_UNSIGNED = no" "$OUT"
 { cat "$SG/ok.conf"; echo "ALLOW_UNSIGNED = maybe"; } > "$SG/maybe.conf"
 check "ALLOW_UNSIGNED takes yes or no" 1 "$TATAMI" -r "$SG/root" -c "$SG/maybe.conf" list
 { cat "$SG/ok.conf"; echo "PUBKEY = $PUB"; } > "$SG/oldkey.conf"
 check "PUBKEY in tatami.conf is refused" 1 "$TATAMI" -r "$SG/root" -c "$SG/oldkey.conf" list
 has "and points to the keys directory" "PUBKEY is gone: put the public key file into etc/tatami/keys/"
 mkdir -p "$KEYS"; echo garbage > "$KEYS/garbage.pub"; echo "$PUB" > "$KEYS/.hidden"; mkdir "$KEYS/subdir"
-OUT=$("$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update 2>&1); rc=$?
-[ $rc -ne 0 ] && echo "$OUT" | grep -q "garbage.pub is not a public key" && echo "$OUT" | grep -q "no trusted key" && ok "a file that is not a key is skipped with a warning; dot files and directories are ignored" || bad "garbage key handling (exit $rc)" "$OUT"
+OUT=$("$TATAMI" -r "$SG/root" -c "$SG/ok.conf" list --available 2>&1); rc=$?
+echo "$OUT" | grep -q "garbage.pub is not a public key" && echo "$OUT" | grep -q "no trusted key" && ok "a file that is not a key is skipped with a warning; dot files and directories are ignored" || bad "garbage key handling (exit $rc)" "$OUT"
 BASE64=$(python3 -c "import base64,sys; print(base64.b64encode(bytes.fromhex(sys.argv[1])).decode())" "$PUB")
-echo "$BASE64" > "$KEYS/b64.pub"
+echo "$BASE64" > "$KEYS/core.pub"
 check "a key file may hold base64" 0 "$TATAMI" -r "$SG/root" -c "$SG/ok.conf" update
 rm -rf "$KEYS"; restorekeys
 nokeys

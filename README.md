@@ -201,11 +201,20 @@ with a replaced key no longer verify.
 into `/etc/tatami/keys/`, which is simply a directory of public keys, one per file:
 
 ```sh
-cp privkey.pub /etc/tatami/keys/myrepo.pub
+cp privkey.pub /etc/tatami/keys/core.pub     # core = the repository's name in repos.conf
 ```
 
 To trust another signer add its file too; a signature made by **any** of the keys is accepted.
 To stop trusting one, delete its file. Nothing else needs to be edited.
+
+**Or let tatami fetch it.** If `/etc/tatami/keys/<repo>.pub` does not exist, `tatami update`
+downloads `<repo url>/tatami.pub` (publish your `.pub` file under that name next to
+`repo.solv`) into a quarantine file, and only trusts it if it verifies the signature of that
+repository's `repo.solv`; then it is stored as `<repo>.pub`. This is trust on first use: it only
+proves that the key and the index belong together, so it is **https:// only** (an `http://`
+repository needs its key copied by hand), and it is safest when you also compare the key
+through another channel. A repository whose key is already in the directory under that name
+is never re-fetched.
 
 **3. That is all.** From now on:
 

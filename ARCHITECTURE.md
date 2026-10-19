@@ -180,6 +180,15 @@ file is stored in the cache under its final name or installed.
   loaded at start-up in name order; a file that is not a key is skipped with a warning,
   dot files and subdirectories are ignored. A signature is good if it verifies against
   **any** key (the SHA-512 pre-hash state is finished once per key).
+- **First-use key fetch.** If `keys/<repo>.pub` is missing, `tatami update` fetches
+  `<repo url>/tatami.pub` through `FETCHCMD`, **https only**, into
+  `var/cache/tatami/<repo>_quarantine.pub`, then fetches `repo.solv` and its `.sig` into
+  `.part` files and verifies them against the quarantined key alone. Only if the proof holds
+  is the key copied into the store under a hidden name (same filesystem, so the rename is
+  atomic) and renamed to `<repo>.pub`, after which the index is committed. On any failure the
+  quarantine key and the `.part` files are deleted. This is trust on first use (it proves the
+  key and the index belong together, not who published them). A failed key download skips
+  the repository with a warning; a failed proof aborts the update.
 - **Consumer.** With at least one trusted key, `tatami update` fetches `repo.solv` and
   `repo.solv.sig`; `tatami install` fetches each package and its `.sig`. Everything is
   verified into `.part` files first. A bad, wrong-key or missing signature aborts, and
