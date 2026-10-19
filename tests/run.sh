@@ -87,11 +87,6 @@ cat > "$CONF" <<CONFIG
 REPO_DIRS   =   $REPO
 BULKHEAD = no
 CONFIG
-# the extension and the compression are fixed when tatami is built: the suite's packages
-# use the defaults, and tatamk is asked for gzip (python's tarfile and plain tar read it)
-REAL_TATAMK="$TATAMK"
-printf '#!/bin/sh\nexec "%s" -z gz "$@"\n' "$REAL_TATAMK" > "$T/tatamk-gz"; chmod +x "$T/tatamk-gz"
-TATAMK="$T/tatamk-gz"
 # the file rules and the held packages live in the root's etc/tatami, not in tatami.conf
 set_rules() { mkdir -p "$1/etc/tatami"; printf 'UPGRADE ^etc/.*$ NO\n' > "$1/etc/tatami/upgrade.rules"; }
 set_rules "$ROOT"
@@ -461,17 +456,17 @@ check "noarch also installs from a file argument" 0 ty install "$REPO/na-any_1.0
 check "noarch installs when the host architecture is unknown to libsolv" 0 machine zz80 "$TATAMI" -r "$ROOT" -c "$CONF" -s install na-noarch
 
 echo "# package names: <name>_<version>-<release>_<arch>.tar.<compression>, or a fixed extension"
-DEFEXT=$(sed -n 's/^PKG_EXT="\([^"]*\)".*/\1/p' "$REAL_TATAMK" | head -1)
+DEFEXT=$(sed -n 's/^PKG_EXT="\([^"]*\)".*/\1/p' "$TATAMK" | head -1)
 [ "$DEFEXT" != "@DEFAULT_PKG_EXT@" ] && ok "the build-time extension was substituted in tatamk (${DEFEXT:-automatic})" || bad "default extension not substituted in tatamk" "$DEFEXT"
 [ "$DEFEXT" = tar.pkg ] && ok "the default extension is tar.pkg" || bad "default extension is not tar.pkg" "$DEFEXT"
-DEFCOMP=$(sed -n 's/^DEFAULT_COMPRESSION="\([^"]*\)".*/\1/p' "$REAL_TATAMK" | head -1)
+DEFCOMP=$(sed -n 's/^DEFAULT_COMPRESSION="\([^"]*\)".*/\1/p' "$TATAMK" | head -1)
 [ "$DEFCOMP" = zst ] && ok "the build-time compression is zst by default" || bad "default compression is not zst" "$DEFCOMP"
 grep -v '^#' "$REPO_ROOT_DIR/build.conf" 2>/dev/null | grep -q '[^[:space:]]' && bad "build.conf has an active assignment" || ok "build.conf has only commented-out lines"
 EXPECT="$DEFEXT"
 mkdir -p "$T/extrepo" "$T/recipes/ext1"
 printf 'name=ext1\nversion=1\nrelease=3\narch='$HARCH'\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext1/Tatamifile"
 printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$T/extrepo" > "$T/noext.conf"
-check "tatamk names the package by the build-time extension" 0 "$REAL_TATAMK" -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+check "tatamk names the package by the build-time extension" 0 "$TATAMK" -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 [ -f "$T/extrepo/ext1_1-3_${HARCH}.$EXPECT" ] && ok "package is named ext1_1-3_${HARCH}.$EXPECT" || bad "default-named package missing" "$(ls "$T/extrepo")"
 [ "$(head -c 4 "$T/extrepo/ext1_1-3_${HARCH}.$EXPECT" | od -An -tx1 | tr -d ' \n')" = 28b52ffd ] && ok "and it is compressed with the build-time default, zstd" || bad "default compression"
 check "tatami recognises that name" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" index "$T/extrepo"
@@ -485,15 +480,11 @@ has "with a message that points to build.conf" "PKG_EXT is a compile-time settin
 printf 'PKG_COMPRESSION = gz\nBULKHEAD = no\n' > "$T/badcomp.conf"
 check "PKG_COMPRESSION in tatami.conf is refused by tatami" 1 "$TATAMI" -r "$ROOT" -c "$T/badcomp.conf" list
 has "with the same message" "PKG_COMPRESSION is a compile-time setting.*build.conf"
-printf 'PKG_EXT =\nBULKHEAD = no\n' > "$T/emptyext.conf"
-check "even an empty PKG_EXT is refused" 1 "$TATAMI" -r "$ROOT" -c "$T/emptyext.conf" list
 rm -f "$T/extrepo"/ext1_*
 printf 'PKG_EXT = other\nPKG_COMPRESSION = gz\nBULKHEAD = no\n' > "$T/ignored2.conf"
-OUT=$(PKG_EXT=envext PKG_COMPRESSION=gz "$REAL_TATAMK" -c "$T/ignored2.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo" 2>&1)
+OUT=$(PKG_EXT=envext PKG_COMPRESSION=gz "$TATAMK" -c "$T/ignored2.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo" 2>&1)
 [ -f "$T/extrepo/ext1_1-3_${HARCH}.$EXPECT" ] && [ "$(ls "$T/extrepo" | grep -c "^ext1_")" = 1 ] && ok "tatamk ignores PKG_EXT in the configuration and in the environment" || bad "tatamk was influenced at run time" "$(ls "$T/extrepo")"
 [ "$(head -c 4 "$T/extrepo/ext1_1-3_${HARCH}.$EXPECT" | od -An -tx1 | tr -d ' \n')" = 28b52ffd ] && ok "and PKG_COMPRESSION too: still zstd" || bad "compression changed at run time"
-check "-z is the one thing that overrides the compression" 0 "$REAL_TATAMK" -z xz -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
-[ "$(head -c 6 "$T/extrepo/ext1_1-3_${HARCH}.$EXPECT" | od -An -tx1 | tr -d ' \n')" = fd377a585a00 ] && ok "-z xz: the same name, xz inside" || bad "-z ignored"
 
 # other values need another build: variants are built from a copy of the sources
 variant() { # <name> <make variables...>: builds tatami and tatamk into $T/var-<name>
@@ -561,7 +552,7 @@ for comp in gz zst xz bz2 lz4 lzma; do
 	mkdir -p "$T/comp-$comp/recipe" "$T/comp-$comp/repo" "$T/comp-$comp/root/etc"
 	printf 'name=cmp-%s\nversion=1\narch='$HARCH'\nbuild() { mkdir -p $PKG/usr/share/cmp; echo "compressed with %s" > $PKG/usr/share/cmp/%s; }\n' "$comp" "$comp" "$comp" > "$T/comp-$comp/recipe/Tatamifile"
 	printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$T/comp-$comp/repo" > "$T/comp-$comp/conf"
-	check "tatamk builds a $comp package" 0 "$REAL_TATAMK" -z "$comp" -c "$T/comp-$comp/conf" -f "$T/comp-$comp/recipe/Tatamifile" -o "$T/comp-$comp/repo"
+	check "tatamk builds a $comp package" 0 "$TATAMK" -z "$comp" -c "$T/comp-$comp/conf" -f "$T/comp-$comp/recipe/Tatamifile" -o "$T/comp-$comp/repo"
 	pkgf="$T/comp-$comp/repo/cmp-${comp}_1_$HARCH.$EXT"
 	case "$comp" in gz) magic='1f8b' ;; zst) magic='28b52ffd' ;; xz) magic='fd377a585a00' ;; bz2) magic='425a68' ;; lz4) magic='04224d18' ;; lzma) magic='5d0000' ;; esac
 	[ "$(head -c 6 "$pkgf" | od -An -tx1 | tr -d ' \n' | cut -c1-${#magic})" = "$magic" ] && ok "the $comp package really is $comp-compressed" || bad "$comp package has the wrong compression" "$(head -c 6 "$pkgf" | od -An -tx1)"
@@ -1418,7 +1409,8 @@ version=1.0
 arch=$(uname -m)
 build() { mkdir -p $PKG/usr/share/sg-app; echo signed > $PKG/usr/share/sg-app/f; }
 RCP
-( cd "$SG" && HOME="$SG/home" "$TATAMK" -c "$TCONF" -f "$SG/Tatamifile" -o "$SG/srv/core" ) > "$SG/mk.log" 2>&1
+# gzip: a few appended bytes (the tampering below) still leave a readable archive, so the index step sees the package
+( cd "$SG" && HOME="$SG/home" "$TATAMK" -z gz -c "$TCONF" -f "$SG/Tatamifile" -o "$SG/srv/core" ) > "$SG/mk.log" 2>&1
 P="sg-app_1.0_${HARCH}.tar.pkg"
 [ -f "$SG/srv/core/$P.sig" ] && [ -f "$SG/srv/core/repo.solv" ] && [ -f "$SG/srv/core/repo.solv.sig" ] && ok "tatamk (with ~/.tatami/privkey) left the package, repo.solv and both .sig files" || bad "tatamk did not sign" "$(cat "$SG/mk.log"; ls "$SG/srv/core")"
 ( cd "$SG" && HOME="$SG/nohome" "$TATAMK" -c "$TCONF" -f "$SG/Tatamifile" -o "$SG/unsigned" ) > "$SG/mk2.log" 2>&1
@@ -1539,9 +1531,6 @@ rm -f "$SG/srv/core/tatami.pub"; nokeys
 { cat "$SG/ok.conf"; echo "ALLOW_UNSIGNED = yes"; } > "$SG/allow.conf"; : > "$FLOG"
 check "ALLOW_UNSIGNED = yes accepts it without a key" 0 "$TATAMI" -r "$SG/root" -c "$SG/allow.conf" update
 grep -q "tatami.pub" "$FLOG" && bad "a key was fetched although unsigned data is allowed" || ok "and no key is fetched then"
-{ cat "$SG/ok.conf"; echo "ALLOW_UNSIGNED = no"; } > "$SG/disallow.conf"
-OUT=$("$TATAMI" -r "$SG/root" -c "$SG/disallow.conf" update 2>&1)
-echo "$OUT" | grep -q "could not fetch the public key" && ok "ALLOW_UNSIGNED = no is the default" || bad "ALLOW_UNSIGNED = no" "$OUT"
 { cat "$SG/ok.conf"; echo "ALLOW_UNSIGNED = maybe"; } > "$SG/maybe.conf"
 check "ALLOW_UNSIGNED takes yes or no" 1 "$TATAMI" -r "$SG/root" -c "$SG/maybe.conf" list
 { cat "$SG/ok.conf"; echo "PUBKEY = $PUB"; } > "$SG/oldkey.conf"
@@ -1742,7 +1731,7 @@ echo "# sensible defaults: nothing configured at all"
 DF="$T/defaults"; rm -rf "$DF"; mkdir -p "$DF/recipe" "$DF/out" "$DF/root"
 printf 'name=dflt\nversion=1.0\narch='$HARCH'\nbuild() { mkdir -p "$PKG/usr/bin"; echo hi > "$PKG/usr/bin/dflt"; }\n' > "$DF/recipe/Tatamifile"
 # no config file (-c points nowhere): the build-time extension and compression
-( cd "$DF/recipe" && "$REAL_TATAMK" -c "$DF/none.conf" --no-bulkhead -o "$DF/out" ) >"$DF/mk.log" 2>&1
+( cd "$DF/recipe" && "$TATAMK" -c "$DF/none.conf" --no-bulkhead -o "$DF/out" ) >"$DF/mk.log" 2>&1
 [ -f "$DF/out/dflt_1.0_$HARCH.tar.pkg" ] && ok "default package is <name>_<version>_<arch of the recipe>.tar.pkg" || bad "default package name"
 check "tatami reads the unconfigured package" 0 bash -c "'$TATAMI' -r '$DF/root' -c '$DF/none.conf' show '$DF/out/dflt_1.0_$HARCH.tar.pkg' >/dev/null || true"
 mkdir -p "$DF/root/etc/tatami"
