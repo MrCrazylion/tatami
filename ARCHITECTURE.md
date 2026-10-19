@@ -151,7 +151,7 @@ file is stored in the cache under its final name or installed.
 
 ### SHA-256 package hashes (integrity binding)
 
-- `tatami index` (and so `tatamk`) computes the SHA-256 of every package file and
+- `tatami update` (on a local repository, and so `tatamk` for its output directory) computes the SHA-256 of every package file and
   stores it in `repo.solv` as libsolv's standard `SOLVABLE_CHECKSUM`; `tatami show`
   prints it.
 - A package downloaded from a remote repository is hashed with libsodium immediately
@@ -374,8 +374,8 @@ ships the `ldconfig` hook as an example.
 - **Default and offline-first.** With nothing configured the only repository is the
   local directory `var/lib/tatami/packages`. Nothing is downloaded unless a remote
   repository is configured explicitly.
-- **Local repositories** are read in place. `tatami index <dir>` writes the binary
-  `repo.solv`; if packages are newer than the index, tatami warns and scans the
+- **Local repositories** are read in place. `tatami update` writes the binary
+  `repo.solv` (there is no separate `index` command; `tatamk` indexes its output directory by running `update` against a throw-away root that lists it as the only repository); if packages are newer than the index, tatami warns and scans the
   directory instead, so results are never wrong, only slower.
 - **Remote repositories.** `tatami update` downloads `repo.solv` (and its signature) to
   `var/lib/tatami/repos/<name>/`; `tatami install` downloads packages to

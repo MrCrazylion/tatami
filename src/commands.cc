@@ -93,7 +93,7 @@ bool confirm(const context& ctx)
 // Repositories
 //
 // A repository is a directory of packages. If it holds a repo.solv (written by
-// 'tatami index') that binary index is loaded; otherwise the packages are
+// 'tatami update') that binary index is loaded; otherwise the packages are
 // scanned, which is slower but always right. The directories come from
 // REPO_DIRS in the configuration (plain paths or file:// URLs); without any the
 // default is <root>/var/lib/tatami/packages.
@@ -121,7 +121,7 @@ vector<repo_spec> repositories(const context& ctx)
 
 // Reads the .META of every package in 'dir'. Packages that cannot be read are
 // skipped with a warning. With 'checksums' the SHA-256 of every package file is
-// computed too (what 'tatami index' stores in repo.solv; only remote clients use it).
+// computed too (what 'tatami update' stores in repo.solv; only remote clients use it).
 vector<pkgmeta> scan_dir(const context& ctx, const string& dir, bool checksums = false)
 {
 	vector<pkgmeta> index;
@@ -275,7 +275,7 @@ void load_repositories(const context& ctx, resolver& res)
 				continue;
 			}
 			cerr << "tatami: warning: " << solv << " is older than the packages in " << dir
-			     << ", scanning them instead (run 'tatami index " << dir << "')" << endl;
+			     << ", scanning them instead (run 'tatami update')" << endl;
 		}
 		res.add_repo(dir, scan_dir(ctx, dir));
 	}
@@ -305,7 +305,7 @@ string fetch_package(const context& ctx, const plan_step& st)
 	// checked this way. An index without checksums is refused, as it cannot tell.
 	if (st.checksum.empty())
 		throw runtime_error("the index of the remote repository has no checksum for " + file +
-				    " (run 'tatami index' on the server and 'tatami update' here)");
+				    " (rebuild the index on the server, and run 'tatami update' here)");
 
 	// a cached copy is only reused if its signature and checksum still verify
 	if (file_exists(cached)) {
@@ -614,21 +614,6 @@ void cmd_upgrade(context& ctx)
 //
 // index / update: write the binary repository index
 //
-
-void cmd_index(context& ctx)
-{
-	require_args(ctx, "repository directory");
-
-	for (size_t i = 0; i < ctx.args.size(); i++) {
-		string dir = ctx.args[i];
-		if (starts_with(dir, "file://"))
-			dir.erase(0, 7);
-		if (dir.find("://") != string::npos)
-			throw runtime_error("cannot index " + dir + ": only a local directory can be indexed");
-		const size_t n = index_dir(ctx, dir);
-		cout << "Indexed " << n << " package" << (n == 1 ? "" : "s") << " in " << dir << "/repo.solv" << endl;
-	}
-}
 
 // Trust on first use. A remote repository <name> is trusted through the key file
 // <root>/etc/tatami/keys/<name>.pub. When that file is missing, the key is fetched
@@ -1042,8 +1027,7 @@ void cmd_owns(context& ctx)
 }
 
 const command_t commands[] = {
-	{ "update",  0,      "update",                   "index local repositories, fetch remote ones (FETCHCMD)",       false, cmd_update },
-	{ "index",   0,      "index <dir>...",           "write the repo.solv index of repository directories",      false, cmd_index },
+	{ "update",  0,      "update",                   "index the local repositories, fetch the remote ones (FETCHCMD)",       false, cmd_update },
 	{ "install", "add",  "install <pkg|file>...",    "install packages (and their dependencies) or upgrade them", true,  cmd_install },
 	{ "remove",  "rm",   "remove <package>...",      "remove packages, their dependents and unused dependencies", true,  cmd_remove },
 	{ "upgrade", 0,      "upgrade",                  "upgrade all installed packages",                           true,  cmd_upgrade },

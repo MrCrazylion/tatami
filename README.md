@@ -301,19 +301,10 @@ system is read-only, there is no network, and only the package directory is writ
 `pre_install()` and `post_install()` functions in a file called `tatami.install` next to the
 `Tatamifile`; `tatamk` bundles it automatically.
 
-### Index a local repository
-
-```sh
-tatami index /var/lib/tatami/packages
-```
-
-This writes `repo.solv`, the binary index with the metadata and the SHA-256 hash of every
-package. (If you have a signing key, `tatamk` has already done this for you.)
-
 ### Install
 
 ```sh
-sudo tatami update              # refresh the indexes of the configured repositories
+sudo tatami update              # index the local repositories, fetch the remote ones
 sudo tatami install hello       # install a package and its dependencies
 hello
 ```

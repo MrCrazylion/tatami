@@ -47,13 +47,8 @@ Prepare the repositories listed in
 .BR tatami.conf (5):
 write the
 .B repo.solv
-index of each local repository, and download the index of each remote one.
-.TP
-.BI index " dir" ...
-Write the binary index
-.I dir\fB/repo.solv
-of one or more local repository directories.
-It holds the metadata and the SHA\-256 checksum of every package.
+index of each local repository (it holds the metadata and the SHA\-256 checksum of every package),
+and download the index of each remote one.
 .TP
 .BI install " package" "|" file ...
 Install packages and the dependencies they need, or upgrade them if they are

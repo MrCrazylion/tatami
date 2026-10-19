@@ -90,6 +90,14 @@ CONFIG
 # the file rules and the held packages live in the root's etc/tatami, not in tatami.conf
 set_rules() { mkdir -p "$1/etc/tatami"; printf 'UPGRADE ^etc/.*$ NO\n' > "$1/etc/tatami/upgrade.rules"; }
 set_rules "$ROOT"
+# the server side of a repository: the index of a directory is written by 'tatami update', which
+# indexes a local repository; this is what tatamk does for its output directory. (No 'tatami index'.)
+publish_index() {
+	local d; d=$(mktemp -d "$T/pubidx.XXXXXX"); mkdir -p "$d/etc/tatami"
+	printf 'out = %s\n' "$1" > "$d/etc/tatami/repos.conf"
+	"$TATAMI" -r "$d" update; local rc=$?
+	rm -rf "$d"; return $rc
+}
 cat > "$T/fakeuname.c" <<'C'
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -469,7 +477,7 @@ printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$T/extrepo" > "$T/noext.conf"
 check "tatamk names the package by the build-time extension" 0 "$TATAMK" -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 [ -f "$T/extrepo/ext1_1-3_${HARCH}.$EXPECT" ] && ok "package is named ext1_1-3_${HARCH}.$EXPECT" || bad "default-named package missing" "$(ls "$T/extrepo")"
 [ "$(head -c 4 "$T/extrepo/ext1_1-3_${HARCH}.$EXPECT" | od -An -tx1 | tr -d ' \n')" = 28b52ffd ] && ok "and it is compressed with the build-time default, zstd" || bad "default compression"
-check "tatami recognises that name" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" index "$T/extrepo"
+check "tatami recognises that name" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" update
 has "tatami found the default-named package" "1 package"
 hasnt "no naming warning" "named differently"
 
@@ -500,9 +508,9 @@ if variant custom PKG_EXT=tpkg PKG_COMPRESSION=gz; then
 	check "that tatamk names the package .tpkg" 0 env TATAMI="$VC/tatami" "$VC/tatamk" -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 	[ -f "$T/extrepo/ext1_1-3_${HARCH}.tpkg" ] && ok "ext1_1-3_${HARCH}.tpkg" || bad "custom extension" "$(ls "$T/extrepo")"
 	[ "$(head -c 2 "$T/extrepo/ext1_1-3_${HARCH}.tpkg" | od -An -tx1 | tr -d ' \n')" = 1f8b ] && ok "compressed with gzip, the build-time compression" || bad "custom compression"
-	check "that tatami indexes it" 0 "$VC/tatami" -r "$ROOT" -c "$T/noext.conf" index "$T/extrepo"
+	check "that tatami indexes it" 0 "$VC/tatami" -r "$ROOT" -c "$T/noext.conf" update
 	has "one package" "Indexed 1 package"
-	check "a tatami with the default extension does not take .tpkg as a package" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" index "$T/extrepo"
+	check "a tatami with the default extension does not take .tpkg as a package" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" update
 	has "none found" "Indexed 0 package"
 else
 	bad "variant build (PKG_EXT=tpkg PKG_COMPRESSION=gz)" "$(tail -5 "$T/var-custom/build.log")"
@@ -520,7 +528,7 @@ if variant auto PKG_EXT=; then
 	check "tatamk -z none names it .tar" 0 AUTOENV -z none -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 	[ -f "$T/extrepo/ext1_1-3_${HARCH}.tar" ] && ok "uncompressed package is ext1_1-3_${HARCH}.tar" || bad "plain tar package missing"
 	check "tatamk refuses an unknown compression" 1 AUTOENV -z rot13 -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
-	check "tatami indexes every tar.<compression> in one repository" 0 "$VA/tatami" -r "$ROOT" -c "$T/noext.conf" index "$T/extrepo"
+	check "tatami indexes every tar.<compression> in one repository" 0 "$VA/tatami" -r "$ROOT" -c "$T/noext.conf" update
 	has "the same package in several formats is indexed once" "Indexed 1 package "
 	has "and the extra copies are reported" "ext1 1-3 is already in the repository"
 else
@@ -540,7 +548,7 @@ mkdir -p "$T/recipes/ext2"
 printf 'name=ext-two\nversion=2.5\nrelease=1\narch=x86_64\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext2/Tatamifile"
 check "build a package for x86_64 (hyphenated name, underscore in the arch)" 0 "$TATAMK" -c "$T/noext.conf" -f "$T/recipes/ext2/Tatamifile" -o "$T/extrepo"
 [ -f "$T/extrepo/ext-two_2.5-1_x86_64.$EXPECT" ] && ok "named ext-two_2.5-1_x86_64.$EXPECT" || bad "x86_64 package name" "$(ls "$T/extrepo")"
-check "tatami parses it back without a naming warning" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" index "$T/extrepo"
+check "tatami parses it back without a naming warning" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" update
 hasnt "no warning for a name whose arch contains an underscore" "named differently"
 printf 'name=ext3\nversion=1\narch=NoArch\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext2/Tatamifile"
 check "arch in any case: NoArch is written noarch" 0 "$TATAMK" -c "$T/noext.conf" -f "$T/recipes/ext2/Tatamifile" -o "$T/extrepo"
@@ -969,11 +977,14 @@ mkp "$RP/a" rp-two 1.0 - - usr/share/rp-two/f:two
 printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$RP/a" > "$RP/a.conf"
 ROOT_MAIN="$ROOT"; ROOT="$RP/root"
 tr() { "$TATAMI" -r "$ROOT" -c "$RP/$1.conf" "${@:2}"; }
-check "tatami index writes repo.solv into the directory" 0 "$TATAMI" index "$RP/a"
+check "tatami update writes repo.solv into a local repository" 0 tr a update
 has "it reports the packages" "Indexed 2 packages in .*/a/repo.solv"
 [ "$(head -c 4 "$RP/a/repo.solv")" = SOLV ] && ok "repo.solv is a libsolv binary repository" || bad "repo.solv is not a SOLV file" "$(head -c 8 "$RP/a/repo.solv" | od -c | head -1)"
-check "tatami index of a directory that does not exist fails" 1 "$TATAMI" index "$RP/nowhere"
-check "tatami index without an argument fails" 1 "$TATAMI" index
+check "there is no tatami index command any more" 1 "$TATAMI" index "$RP/a"
+has "it is an unknown command" "unknown command 'index'"
+OUT=$("$TATAMI" --help 2>&1); echo "$OUT" | grep -qE "^ *index" && bad "the help still lists index" "$OUT" || ok "and the help does not list it"
+printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$RP/nowhere" > "$RP/nowhere.conf"
+OUT=$(tr nowhere update 2>&1); echo "$OUT" | grep -q "nowhere" && ok "update of a local directory that does not exist reports it" || bad "missing local repository" "$OUT"
 # the index is used as it is when it is not older than the packages: with a garbage package file the
 # scanner would skip it, only the index still knows it
 cp "$RP/a/repo.solv" "$RP/repo.solv.saved"
@@ -986,7 +997,7 @@ check "installing fails cleanly when the indexed file is not what it claims" 1 t
 hasnt "and nothing was half-installed" "Installing"
 rm -f "$RP/a/rp-two_1.0_garbage.tar.pkg"
 mkp "$RP/a" rp-two 1.0 - - usr/share/rp-two/f:two
-check "re-indexing after the repair" 0 "$TATAMI" index "$RP/a"
+check "re-indexing after the repair" 0 tr a update
 # stale index: a package added after the index was written is still found, with a hint
 mkp "$RP/a" rp-three 1.0 - - usr/share/rp-three/f:three
 OUT=$(tr a show rp-three 2>&1); echo "$OUT" | grep -q "^Package: rp-three" && ok "a package added after indexing is found (the directory is scanned)" || bad "stale index" "$OUT"
@@ -1030,7 +1041,7 @@ AR="$T/arch"; rm -rf "$AR"; mkdir -p "$AR/repo" "$AR/root/etc"
 # the arch goes into the file name, the package name may not contain '_': ar-x86_64 is ar-x8664
 for a in riscv64 x86_64 i686 aarch64 noarch; do mkp "$AR/repo" "ar-${a//_/}" 1.0 "$a" - "usr/share/ar-${a//_/}/f:$a"; done
 mkp "$AR/repo" ar-needs 1.0 noarch '"ar-aarch64"' usr/share/ar-needs/f:needs
-"$TATAMI" index "$AR/repo" >/dev/null 2>&1
+publish_index "$AR/repo" >/dev/null 2>&1
 ROOT="$AR/root"
 arch_try() { # machine package... : install in a fresh root on a host that reports that machine
 	local mach="$1"; shift
@@ -1080,7 +1091,7 @@ ldcache=$(stat -c %Y /etc/ld.so.cache 2>/dev/null)
 STAMP="$T/iso.stamp"; touch "$STAMP"; sleep 1
 # this package ships a file under lib/ whose name is also a real file in the HOST's /usr/lib
 mkp "$T/iso-repo" iso-pkg 1.0 - - "lib/$HF:from the package" lib/isolib.so:lib bin/isotool:tool usr/share/iso/data:data
-"$TATAMI" index "$T/iso-repo" >/dev/null 2>&1
+publish_index "$T/iso-repo" >/dev/null 2>&1
 printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$T/iso-repo" > "$T/iso.conf"
 ti() { "$TATAMI" -r "$IR" -c "$T/iso.conf" "$@"; }
 OUT=$(ti -y install iso-pkg 2>&1); rc=$?
@@ -1093,7 +1104,7 @@ OUT=$(ti -y install iso-pkg 2>&1); rc=$?
 [ -L "$IR/lib" ] && [ "$(readlink "$IR/lib")" = /usr/lib ] && ok "the root's own link is still /lib -> /usr/lib" || bad "link changed"
 ti -y install iso-pkg >/dev/null 2>&1
 mkp "$T/iso-repo" iso-pkg 2.0 - - "lib/$HF:from the package v2" lib/isolib.so:lib2 bin/isotool:tool2
-"$TATAMI" index "$T/iso-repo" >/dev/null 2>&1
+publish_index "$T/iso-repo" >/dev/null 2>&1
 OUT=$(ti -y upgrade 2>&1); rc=$?
 [ $rc -eq 0 ] && [ "$(cat "$IR/usr/lib/isolib.so")" = lib2 ] && ok "upgrade through the links" || bad "upgrade" "$OUT"
 [ "$(md5sum "/usr/lib/$HF" | cut -d' ' -f1)" = "$HOSTSUM" ] && ok "the host file is still unchanged after the upgrade" || bad "HOST FILE CHANGED BY UPGRADE"
@@ -1115,7 +1126,7 @@ CHANGED=$(find /usr /etc /var/lib /bin /sbin /lib /lib64 /opt -xdev -newer "$STA
 # a symlink loop in the root is an error, not a hang or an escape
 ln -s loop "$IR/loop"
 mkp "$T/iso-repo" iso-loop 1.0 - - loop/x:x
-"$TATAMI" index "$T/iso-repo" >/dev/null 2>&1
+publish_index "$T/iso-repo" >/dev/null 2>&1
 OUT=$(timeout 20 "$TATAMI" -r "$IR" -c "$T/iso.conf" -y install iso-loop 2>&1); rc=$?
 [ $rc -ne 0 ] && [ $rc -ne 124 ] && echo "$OUT" | grep -q "too many levels of symbolic links" && ok "a symbolic link loop in the root is reported" || bad "link loop (rc $rc)" "$OUT"
 rm -f "$IR/loop"
@@ -1130,7 +1141,7 @@ mkdir -p "$T/hk-repo"
 mkp "$T/hk-repo" hk-lib 1.0 - - usr/lib/libhk.so:lib
 mkp "$T/hk-repo" hk-lib2 1.0 - - usr/lib/libhk2.so:lib2
 mkp "$T/hk-repo" hk-data 1.0 - - usr/share/hk-data/f:data
-"$TATAMI" index "$T/hk-repo" >/dev/null 2>&1
+publish_index "$T/hk-repo" >/dev/null 2>&1
 printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$T/hk-repo" > "$T/hk.conf"
 th() { "$TATAMI" -r "$HK" -c "$T/hk.conf" "$@"; }
 cat > "$HK/etc/tatami/hooks.d/10-libs.hook" <<'HOOK'
@@ -1269,7 +1280,7 @@ RR="$T/rem-root"; SRVDIR="$T/rem-srv"; FLOG="$T/rem-fetch.log"; export SRVDIR FL
 rm -rf "$RR" "$SRVDIR" "$FLOG"; mkdir -p "$RR/etc/tatami" "$SRVDIR/core"
 mkp "$SRVDIR/core" rm-app 1.0 - rm-lib usr/share/rm-app/f:app
 mkp "$SRVDIR/core" rm-lib 1.0 - - usr/share/rm-lib/f:lib
-"$TATAMI" index "$SRVDIR/core" >/dev/null
+publish_index "$SRVDIR/core" >/dev/null
 # the "network": a fetch command that logs and copies from $SRVDIR instead of connecting
 cat > "$T/rem.conf" <<'CONF'
 ALLOW_UNSIGNED = yes
@@ -1349,8 +1360,8 @@ PF
 chmod +x "$T/prog-fetch"
 printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\nFETCHCMD = %s %%URL%% %%DEST%%\n' "$T/prog-fetch" > "$T/prog.conf"
 echo "core = https://mirror.test/core" > "$RR/etc/tatami/repos.conf"; rm -rf "$RR/etc/tatami/repos.d"
-cp "$T/good.solv" "$SRVDIR/core/repo.solv" 2>/dev/null || "$TATAMI" index "$SRVDIR/core" >/dev/null
-rm -f "$SRVDIR"/core/rm-*_1.0_*; mkp "$SRVDIR/core" rm-app 1.0 - - usr/share/rm-app/f:app; "$TATAMI" index "$SRVDIR/core" >/dev/null
+cp "$T/good.solv" "$SRVDIR/core/repo.solv" 2>/dev/null || publish_index "$SRVDIR/core" >/dev/null
+rm -f "$SRVDIR"/core/rm-*_1.0_*; mkp "$SRVDIR/core" rm-app 1.0 - - usr/share/rm-app/f:app; publish_index "$SRVDIR/core" >/dev/null
 PROGOUT=$(python3 - "$TATAMI" "$RR" "$T/prog.conf" <<'PY'
 import os, pty, sys, select
 tatami, root, conf = sys.argv[1:4]
@@ -1468,13 +1479,13 @@ OUT=$(sr -y install sg-app 2>&1); rc=$?
 [ $rc -ne 0 ] && echo "$OUT" | grep -q "CHECKSUM MISMATCH" && ok "a package that differs from the checksum in the index is refused" || bad "substituted package accepted (exit $rc)" "$OUT"
 [ ! -e "$SG/root/usr/share/sg-app/f" ] && [ -z "$(ls -A "$SG/root/var/cache/tatami/packages" 2>/dev/null)" ] && ok "nothing installed, the download (.part) was deleted" || bad "tampered data survived" "$(ls -A "$SG/root/var/cache/tatami/packages")"
 # 2. the index was re-signed to match, but the package's own .sig no longer fits
-"$TATAMI" index "$SG/srv/core" >/dev/null; "$TATAMI" sign "$SG/srv/core/repo.solv" "$SG/home/.tatami/privkey" >/dev/null
+publish_index "$SG/srv/core" >/dev/null; "$TATAMI" sign "$SG/srv/core/repo.solv" "$SG/home/.tatami/privkey" >/dev/null
 check "the client takes the re-signed index" 0 sr update
 OUT=$(sr -y install sg-app 2>&1); rc=$?
 [ $rc -ne 0 ] && echo "$OUT" | grep -q "SIGNATURE VERIFICATION FAILED" && ok "a tampered package is refused by its signature" || bad "tampered package accepted (exit $rc)" "$OUT"
 [ ! -e "$SG/root/usr/share/sg-app/f" ] && [ -z "$(ls -A "$SG/root/var/cache/tatami/packages" 2>/dev/null)" ] && ok "nothing installed, nothing left in the cache" || bad "tampered data survived" "$(ls -A "$SG/root/var/cache/tatami/packages")"
 cp "$SG/pkg.good" "$SG/srv/core/$P"
-"$TATAMI" index "$SG/srv/core" >/dev/null; "$TATAMI" sign "$SG/srv/core/repo.solv" "$SG/home/.tatami/privkey" >/dev/null
+publish_index "$SG/srv/core" >/dev/null; "$TATAMI" sign "$SG/srv/core/repo.solv" "$SG/home/.tatami/privkey" >/dev/null
 sr update >/dev/null 2>&1
 mv "$SG/srv/core/$P.sig" "$SG/pkg.sig"
 OUT=$(sr -y install sg-app 2>&1); rc=$?
@@ -1641,12 +1652,12 @@ hr() { "$TATAMI" -r "$HP/root" -c "$1" "${@:2}"; }
 mkp "$HP/srv/core" hp-held 1.0 - - usr/share/hp-held/f:one
 mkp "$HP/srv/core" hp-free 1.0 - - usr/share/hp-free/f:one
 mkp "$HP/srv/core" hp-dep 1.0 - - usr/share/hp-dep/f:one
-"$TATAMI" index "$HP/srv/core" >/dev/null
+publish_index "$HP/srv/core" >/dev/null
 check "update" 0 hr "$HP/plain.conf" update
 check "install the three packages" 0 hr "$HP/plain.conf" -y install hp-held hp-free hp-dep
 mkp "$HP/srv/core" hp-held 2.0 - - usr/share/hp-held/f:two
 mkp "$HP/srv/core" hp-free 2.0 - - usr/share/hp-free/f:two
-"$TATAMI" index "$HP/srv/core" >/dev/null
+publish_index "$HP/srv/core" >/dev/null
 check "update fetches the new index" 0 hr "$HP/plain.conf" update
 hold_with hp-held
 OUT=$(hr "$HP/hold.conf" -y upgrade 2>&1); rc=$?
@@ -1664,7 +1675,7 @@ check "naming the held package in install upgrades it" 0 hr "$HP/hold.conf" -y i
 # several names, several lines, a package that is not installed
 mkp "$HP/srv/core" hp-held 3.0 - - usr/share/hp-held/f:three
 mkp "$HP/srv/core" hp-free 3.0 - - usr/share/hp-free/f:three
-"$TATAMI" index "$HP/srv/core" >/dev/null; hr "$HP/plain.conf" update >/dev/null
+publish_index "$HP/srv/core" >/dev/null; hr "$HP/plain.conf" update >/dev/null
 printf '# held\n\n  hp-dep  \nnot-installed-anywhere\n#hp-free\nhp-held\n' > "$HP/root/etc/tatami/hold"
 check "a hold file with comments, blanks, blanks around names and unknown packages" 0 hr "$HP/plain.conf" -y upgrade
 [ "$(cat "$HP/root/usr/share/hp-held/f")" = two ] && [ "$(cat "$HP/root/usr/share/hp-free/f")" = three ] && ok "hp-held held (two), hp-free upgraded (three)" || bad "multi-line hold" "$(cat "$HP/root/usr/share/hp-held/f") $(cat "$HP/root/usr/share/hp-free/f")"
@@ -1689,7 +1700,7 @@ echo "# package checksums are for remote packages only: local files and file:// 
 LC="$T/chk"; rm -rf "$LC"; mkdir -p "$LC/repo" "$LC/other" "$LC/root/etc/tatami"
 mkp "$LC/repo" ck-app 1.0 - - usr/share/ck-app/f:original
 mkp "$LC/other" ck-app 1.0 - - usr/share/ck-app/f:substituted
-"$TATAMI" index "$LC/repo" >/dev/null
+publish_index "$LC/repo" >/dev/null
 CP="ck-app_1.0_${HARCH}.tar.pkg"
 cp "$LC/other/$CP" "$LC/repo/$CP"       # same name and version, other content: the index's SHA-256 is now wrong
 printf 'BULKHEAD = no\nALLOW_UNSIGNED = yes\n' > "$LC/c.conf"

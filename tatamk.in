@@ -289,7 +289,12 @@ if [ "$SIGN" = yes ]; then
 fi
 if [ -n "$PRIVKEY" ]; then
 	info "Signing with $PRIVKEY"
-	"$TATAMI" index "$OUTDIR" >/dev/null || die "could not update $OUTDIR/repo.solv"
+	# 'tatami update' indexes a local repository: hand it the output directory as the only one
+	IDXROOT=$(mktemp -d "${TMPDIR:-/tmp}/tatamk-index.XXXXXX") || die "could not create a temporary directory"
+	mkdir -p "$IDXROOT/etc/tatami"
+	printf 'out = %s\n' "$OUTDIR" > "$IDXROOT/etc/tatami/repos.conf"
+	"$TATAMI" -r "$IDXROOT" update >/dev/null || { rm -rf "$IDXROOT"; die "could not update $OUTDIR/repo.solv"; }
+	rm -rf "$IDXROOT"
 	"$TATAMI" sign "$OUTDIR/$PKGFILE" "$PRIVKEY" >/dev/null || die "could not sign $PKGFILE"
 	"$TATAMI" sign "$OUTDIR/repo.solv" "$PRIVKEY" >/dev/null || die "could not sign repo.solv"
 else

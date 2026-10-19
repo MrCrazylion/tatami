@@ -272,7 +272,7 @@ void resolver::add_repo_solv(const string& dir, const string& solv_file)
 	const int r = repo_add_solv(repo, fp, 0);
 	fclose(fp);
 	if (r != 0)
-		throw runtime_error(solv_file + " is not a valid index (" + pool_errstr(pool_) + "); run 'tatami index " + dir + "'");
+		throw runtime_error(solv_file + " is not a valid index (" + pool_errstr(pool_) + "); run 'tatami update'");
 }
 
 void resolver::write_solv(const string& dir, const vector<pkgmeta>& entries, const string& solv_file)
