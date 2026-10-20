@@ -41,17 +41,12 @@ Held packages, file rules and repositories each have their own file in
 .BR /etc/tatami ,
 described below; each of them may be missing.
 The former settings
-.B ARCH
+.B ARCH ,
+.B HoldPkg
 and
-.BR HoldPkg ,
+.BR REPO_DIRS ,
 and rule lines, are refused with a message naming the new place.
 .SH SETTINGS
-.TP
-.B REPO_DIRS
-Repositories as paths or URLs separated by blanks, used when no
-.B repos.conf
-exists (see
-.BR REPOSITORIES ).
 .TP
 .B FETCHCMD
 The command that downloads a remote file.
@@ -296,10 +291,9 @@ Publish such a repository by putting the packages and the files made by
 .BR tatamk (8)
 (the index and the signatures) on a server.
 .PP
-If the list is empty or the files do not exist, the
-.B REPO_DIRS
-setting is used, and failing that the local directory
+If the files do not exist or list nothing, the only repository is the local directory
 .BR /var/lib/tatami/packages .
+There is no other way to configure repositories.
 Nothing is ever downloaded unless a remote repository is configured explicitly.
 When a version is in several repositories, the one listed first wins.
 .SH HOOKS

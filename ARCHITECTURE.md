@@ -265,8 +265,8 @@ with pacman's `IgnorePkg`). Held packages that are not installed are ignored.
 
 ### Where things are configured
 
-- `/etc/tatami/tatami.conf` — engine settings only (`FETCHCMD`, `ALLOW_UNSIGNED`, `BULKHEAD`, and the `REPO_DIRS` fallback). Missing, empty or
-  unreadable is fine: the built-in defaults apply. The old `ARCH`, `HoldPkg`, `PUBKEY`, `PKG_EXT`, `PKG_COMPRESSION` and rule lines
+- `/etc/tatami/tatami.conf` — engine settings only (`FETCHCMD`, `ALLOW_UNSIGNED`, `BULKHEAD`). Missing, empty or
+  unreadable is fine: the built-in defaults apply. The old `ARCH`, `HoldPkg`, `PUBKEY`, `PKG_EXT`, `PKG_COMPRESSION`, `REPO_DIRS` and rule lines
   are refused with a message that names their new home.
 - `/etc/tatami/repos.conf`, `repos.d/*.conf` — repository definitions and nothing else
   (no `FETCHCMD`, no `ALLOW_UNSIGNED`: those are engine settings).
@@ -376,7 +376,8 @@ ships the `ldconfig` hook as an example.
 - **`etc/tatami/repos.conf`** and **`etc/tatami/repos.d/*.conf`** hold `name = url`
   lines (read in alphabetical order). A URL is a path, `file://…`, or a remote
   `http://`, `https://` or `ftp://` address. The first repository listed wins when a
-  version is in several. The older `REPO_DIRS` setting is the fallback.
+  version is in several. With no `repos.conf`, or an empty one, the local default below is used; there is no other
+  way to configure repositories (`REPO_DIRS` is refused).
 - **Default and offline-first.** With nothing configured the only repository is the
   local directory `var/lib/tatami/packages`. Nothing is downloaded unless a remote
   repository is configured explicitly.

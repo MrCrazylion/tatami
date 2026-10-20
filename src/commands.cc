@@ -94,28 +94,19 @@ bool confirm(const context& ctx)
 //
 // A repository is a directory of packages. If it holds a repo.solv (written by
 // 'tatami update') that binary index is loaded; otherwise the packages are
-// scanned, which is slower but always right. The directories come from
-// REPO_DIRS in the configuration (plain paths or file:// URLs); without any the
-// default is <root>/var/lib/tatami/packages.
+// scanned, which is slower but always right. Repositories are defined in
+// <root>/etc/tatami/repos.conf (and repos.d); without any the default is
+// <root>/var/lib/tatami/packages.
 //
 
-// The repositories to use: repos.conf / repos.d of the root if they list any,
-// else REPO_DIRS of tatami.conf, else the local default directory. Only an
-// explicitly configured http(s)/ftp URL is ever fetched; everything else is read
-// straight from disk and never starts FETCHCMD.
+// The repositories to use: the ones listed in repos.conf / repos.d of the root, else
+// the local default directory. Only an explicitly configured http(s)/ftp URL is ever
+// fetched; everything else is read straight from disk and never starts FETCHCMD.
 vector<repo_spec> repositories(const context& ctx)
 {
 	vector<repo_spec> repos = read_repo_config(ctx.opt.root);
-	if (!repos.empty())
-		return repos;
-
-	const vector<string>& specs = ctx.cfg.repo_dirs;
-	for (size_t i = 0; i < specs.size(); i++)
-		repos.push_back(make_repo_spec(ctx.opt.root, "repo" + itos(i + 1), specs[i]));
-
 	if (repos.empty())
 		repos.push_back(make_repo_spec(ctx.opt.root, "local", root_resolve(ctx.opt.root, DEFAULT_REPO_REL)));
-
 	return repos;
 }
 
@@ -681,7 +672,7 @@ void cmd_install(context& ctx)
 				s.res->want_install(arg);
 			} catch (runtime_error& e) {
 				if (s.index.empty() && string(e.what()).find("unable to locate") == 0)
-					throw runtime_error(string(e.what()) + " (no repository offers any package: check REPO_DIRS in tatami.conf)");
+					throw runtime_error(string(e.what()) + " (no repository offers any package: check /" REPOS_CONF ")");
 				throw;
 			}
 		}

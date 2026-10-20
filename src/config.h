@@ -40,7 +40,6 @@ struct rule_t {
 
 struct config_t {
 	string pkg_ext;                 // DEFAULT_PKG_EXT, fixed at build time; empty: tar.<compression>
-	vector<string> repo_dirs;       // directories scanned by 'tatami update'
 	vector<string> hold_pkgs;       // etc/tatami/hold: installed packages that are never upgraded or removed by a transaction
 	string fetchcmd;                // downloads remote repositories (FETCHCMD)
 	bool allow_unsigned;            // ALLOW_UNSIGNED: remote data without signatures is accepted

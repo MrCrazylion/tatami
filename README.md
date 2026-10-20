@@ -149,8 +149,8 @@ FETCHCMD = curl -f -L -# "%URL%" -o "%DEST%"
 
 ### One file per job
 
-`tatami.conf` holds the engine settings only: `FETCHCMD`, `ALLOW_UNSIGNED`, `BULKHEAD`
-and the `REPO_DIRS` fallback. Everything else has its own plain-text file in
+`tatami.conf` holds the engine settings only: `FETCHCMD`, `ALLOW_UNSIGNED`, `BULKHEAD`.
+Everything else has its own plain-text file in
 `/etc/tatami`, and every one of them may be missing:
 
 | File | Content |

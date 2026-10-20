@@ -38,7 +38,6 @@ config_t read_config(const string& filename, bool required)
 
 	string line;
 	unsigned int linecount = 0;
-	bool repos_set = false;
 
 	while (getline(in, line)) {
 		linecount++;
@@ -65,19 +64,7 @@ config_t read_config(const string& filename, bool required)
 				throw runtime_error(where + key + " is a compile-time setting and can no longer be set here: "
 						    "set it in build.conf (or 'make " + key + "=...') and rebuild");
 			} else if (key == "REPO_DIRS") {
-				if (!repos_set)
-					cfg.repo_dirs.clear();
-				repos_set = true;
-				// separated by blanks; a plain path list may also use ':' (not inside a URL)
-				vector<string> words = split(value, " \t");
-				for (size_t w = 0; w < words.size(); w++) {
-					if (words[w].find("://") != string::npos) {
-						cfg.repo_dirs.push_back(words[w]);
-					} else {
-						vector<string> dirs = split(words[w], ":");
-						cfg.repo_dirs.insert(cfg.repo_dirs.end(), dirs.begin(), dirs.end());
-					}
-				}
+				throw runtime_error(where + "REPO_DIRS is gone: list the repositories in " REPOS_CONF);
 			} else if (key == "FETCHCMD") {
 				if (value.empty())
 					throw runtime_error(where + "FETCHCMD is empty");

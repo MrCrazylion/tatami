@@ -17,7 +17,7 @@ pass=0; fail=0
 ok() { pass=$((pass+1)); echo "ok   - $1"; }
 bad() { fail=$((fail+1)); echo "FAIL - $1"; [ -n "$2" ] && echo "$2" | sed 's/^/       /'; }
 
-t() { "$TATAMI" -r "$ROOT" -c "$CONF" "$@"; }
+t() { [ -e "$ROOT/etc/tatami/repos.conf" ] || set_repos "$ROOT" "$REPO"; "$TATAMI" -r "$ROOT" -c "$CONF" "$@"; }
 ty() { t -y "$@"; }
 # check <description> <expected-exit: 0|1> <command...>; output kept in $OUT
 check() {
@@ -84,12 +84,15 @@ rm -rf "$T"
 mkdir -p "$T/home"; export HOME="$T/home"      # tatamk looks for a signing key in ~/.tatami
 mkdir -p "$ROOT/etc" "$REPO" "$T/recipes"
 cat > "$CONF" <<CONFIG
-REPO_DIRS   =   $REPO
 BULKHEAD = no
 CONFIG
 # the file rules and the held packages live in the root's etc/tatami, not in tatami.conf
 set_rules() { mkdir -p "$1/etc/tatami"; printf 'UPGRADE ^etc/.*$ NO\n' > "$1/etc/tatami/upgrade.rules"; }
 set_rules "$ROOT"
+# repositories are defined in <root>/etc/tatami/repos.conf and nowhere else: set_repos <root> <dir>...
+set_repos() { local root="$1" i=0; shift; mkdir -p "$root/etc/tatami"; : > "$root/etc/tatami/repos.conf"
+	for d in "$@"; do i=$((i+1)); echo "repo$i = $d" >> "$root/etc/tatami/repos.conf"; done; }
+set_repos "$ROOT" "$REPO"
 # the server side of a repository: the index of a directory is written by 'tatami update', which
 # indexes a local repository; this is what tatamk does for its output directory. (No 'tatami index'.)
 publish_index() {
@@ -473,11 +476,12 @@ grep -v '^#' "$REPO_ROOT_DIR/build.conf" 2>/dev/null | grep -q '[^[:space:]]' &&
 EXPECT="$DEFEXT"
 mkdir -p "$T/extrepo" "$T/recipes/ext1"
 printf 'name=ext1\nversion=1\nrelease=3\narch='$HARCH'\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext1/Tatamifile"
-printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$T/extrepo" > "$T/noext.conf"
+printf 'BULKHEAD = no\n' > "$T/noext.conf"
+set_repos "$T/extroot" "$T/extrepo"
 check "tatamk names the package by the build-time extension" 0 "$TATAMK" -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 [ -f "$T/extrepo/ext1_1-3_${HARCH}.$EXPECT" ] && ok "package is named ext1_1-3_${HARCH}.$EXPECT" || bad "default-named package missing" "$(ls "$T/extrepo")"
 [ "$(head -c 4 "$T/extrepo/ext1_1-3_${HARCH}.$EXPECT" | od -An -tx1 | tr -d ' \n')" = 28b52ffd ] && ok "and it is compressed with the build-time default, zstd" || bad "default compression"
-check "tatami recognises that name" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" update
+check "tatami recognises that name" 0 "$TATAMI" -r "$T/extroot" -c "$T/noext.conf" update
 has "tatami found the default-named package" "1 package"
 hasnt "no naming warning" "named differently"
 
@@ -508,9 +512,9 @@ if variant custom PKG_EXT=tpkg PKG_COMPRESSION=gz; then
 	check "that tatamk names the package .tpkg" 0 env TATAMI="$VC/tatami" "$VC/tatamk" -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 	[ -f "$T/extrepo/ext1_1-3_${HARCH}.tpkg" ] && ok "ext1_1-3_${HARCH}.tpkg" || bad "custom extension" "$(ls "$T/extrepo")"
 	[ "$(head -c 2 "$T/extrepo/ext1_1-3_${HARCH}.tpkg" | od -An -tx1 | tr -d ' \n')" = 1f8b ] && ok "compressed with gzip, the build-time compression" || bad "custom compression"
-	check "that tatami indexes it" 0 "$VC/tatami" -r "$ROOT" -c "$T/noext.conf" update
+	check "that tatami indexes it" 0 "$VC/tatami" -r "$T/extroot" -c "$T/noext.conf" update
 	has "one package" "Indexed 1 package"
-	check "a tatami with the default extension does not take .tpkg as a package" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" update
+	check "a tatami with the default extension does not take .tpkg as a package" 0 "$TATAMI" -r "$T/extroot" -c "$T/noext.conf" update
 	has "none found" "Indexed 0 package"
 else
 	bad "variant build (PKG_EXT=tpkg PKG_COMPRESSION=gz)" "$(tail -5 "$T/var-custom/build.log")"
@@ -528,7 +532,7 @@ if variant auto PKG_EXT=; then
 	check "tatamk -z none names it .tar" 0 AUTOENV -z none -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 	[ -f "$T/extrepo/ext1_1-3_${HARCH}.tar" ] && ok "uncompressed package is ext1_1-3_${HARCH}.tar" || bad "plain tar package missing"
 	check "tatamk refuses an unknown compression" 1 AUTOENV -z rot13 -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
-	check "tatami indexes every tar.<compression> in one repository" 0 "$VA/tatami" -r "$ROOT" -c "$T/noext.conf" update
+	check "tatami indexes every tar.<compression> in one repository" 0 "$VA/tatami" -r "$T/extroot" -c "$T/noext.conf" update
 	has "the same package in several formats is indexed once" "Indexed 1 package "
 	has "and the extra copies are reported" "ext1 1-3 is already in the repository"
 else
@@ -548,7 +552,7 @@ mkdir -p "$T/recipes/ext2"
 printf 'name=ext-two\nversion=2.5\nrelease=1\narch=x86_64\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext2/Tatamifile"
 check "build a package for x86_64 (hyphenated name, underscore in the arch)" 0 "$TATAMK" -c "$T/noext.conf" -f "$T/recipes/ext2/Tatamifile" -o "$T/extrepo"
 [ -f "$T/extrepo/ext-two_2.5-1_x86_64.$EXPECT" ] && ok "named ext-two_2.5-1_x86_64.$EXPECT" || bad "x86_64 package name" "$(ls "$T/extrepo")"
-check "tatami parses it back without a naming warning" 0 "$TATAMI" -r "$ROOT" -c "$T/noext.conf" update
+check "tatami parses it back without a naming warning" 0 "$TATAMI" -r "$T/extroot" -c "$T/noext.conf" update
 hasnt "no warning for a name whose arch contains an underscore" "named differently"
 printf 'name=ext3\nversion=1\narch=NoArch\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext2/Tatamifile"
 check "arch in any case: NoArch is written noarch" 0 "$TATAMK" -c "$T/noext.conf" -f "$T/recipes/ext2/Tatamifile" -o "$T/extrepo"
@@ -559,7 +563,8 @@ echo "# compression formats: all read and written natively, no external program"
 for comp in gz zst xz bz2 lz4 lzma; do
 	mkdir -p "$T/comp-$comp/recipe" "$T/comp-$comp/repo" "$T/comp-$comp/root/etc"
 	printf 'name=cmp-%s\nversion=1\narch='$HARCH'\nbuild() { mkdir -p $PKG/usr/share/cmp; echo "compressed with %s" > $PKG/usr/share/cmp/%s; }\n' "$comp" "$comp" "$comp" > "$T/comp-$comp/recipe/Tatamifile"
-	printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$T/comp-$comp/repo" > "$T/comp-$comp/conf"
+	printf 'BULKHEAD = no\n' > "$T/comp-$comp/conf"
+	set_repos "$T/comp-$comp/root" "$T/comp-$comp/repo"
 	check "tatamk builds a $comp package" 0 "$TATAMK" -z "$comp" -c "$T/comp-$comp/conf" -f "$T/comp-$comp/recipe/Tatamifile" -o "$T/comp-$comp/repo"
 	pkgf="$T/comp-$comp/repo/cmp-${comp}_1_$HARCH.$EXT"
 	case "$comp" in gz) magic='1f8b' ;; zst) magic='28b52ffd' ;; xz) magic='fd377a585a00' ;; bz2) magic='425a68' ;; lz4) magic='04224d18' ;; lzma) magic='5d0000' ;; esac
@@ -974,16 +979,19 @@ echo "# repositories: the binary repo.solv index"
 RP="$T/repos"; rm -rf "$RP"; mkdir -p "$RP/a" "$RP/b" "$RP/root/etc"
 mkp "$RP/a" rp-one 1.0 - '"rp-two >= 1.0"' usr/share/rp-one/f:one
 mkp "$RP/a" rp-two 1.0 - - usr/share/rp-two/f:two
-printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$RP/a" > "$RP/a.conf"
+printf 'BULKHEAD = no\n' > "$RP/base.conf"
+# a scenario is the repos.conf of the root: <name>.repos (no such file: no repos.conf at all)
+echo "ra = $RP/a" > "$RP/a.repos"
 ROOT_MAIN="$ROOT"; ROOT="$RP/root"
-tr() { "$TATAMI" -r "$ROOT" -c "$RP/$1.conf" "${@:2}"; }
+tr() { mkdir -p "$ROOT/etc/tatami"; if [ -f "$RP/$1.repos" ]; then cp "$RP/$1.repos" "$ROOT/etc/tatami/repos.conf"; else rm -f "$ROOT/etc/tatami/repos.conf"; fi
+	"$TATAMI" -r "$ROOT" -c "$RP/base.conf" "${@:2}"; }
 check "tatami update writes repo.solv into a local repository" 0 tr a update
 has "it reports the packages" "Indexed 2 packages in .*/a/repo.solv"
 [ "$(head -c 4 "$RP/a/repo.solv")" = SOLV ] && ok "repo.solv is a libsolv binary repository" || bad "repo.solv is not a SOLV file" "$(head -c 8 "$RP/a/repo.solv" | od -c | head -1)"
 check "there is no tatami index command any more" 1 "$TATAMI" index "$RP/a"
 has "it is an unknown command" "unknown command 'index'"
 OUT=$("$TATAMI" --help 2>&1); echo "$OUT" | grep -qE "^ *index" && bad "the help still lists index" "$OUT" || ok "and the help does not list it"
-printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$RP/nowhere" > "$RP/nowhere.conf"
+echo "rn = $RP/nowhere" > "$RP/nowhere.repos"
 OUT=$(tr nowhere update 2>&1); echo "$OUT" | grep -q "nowhere" && ok "update of a local directory that does not exist reports it" || bad "missing local repository" "$OUT"
 # the index is used as it is when it is not older than the packages: with a garbage package file the
 # scanner would skip it, only the index still knows it
@@ -1013,8 +1021,8 @@ echo "# repositories: several, file:// URLs, the default location"
 rm -rf "$ROOT"; mkdir -p "$ROOT/etc"
 mkp "$RP/a" rp-dup 1.0 - - usr/share/rp-dup/f:from-a
 mkp "$RP/b" rp-dup 1.0 - - usr/share/rp-dup/f:from-b
-printf 'REPO_DIRS = %s %s\nBULKHEAD = no\n' "$RP/a" "$RP/b" > "$RP/ab.conf"
-printf 'REPO_DIRS = %s %s\nBULKHEAD = no\n' "$RP/b" "$RP/a" > "$RP/ba.conf"
+printf 'ra = %s\nrb = %s\n' "$RP/a" "$RP/b" > "$RP/ab.repos"
+printf 'rb = %s\nra = %s\n' "$RP/b" "$RP/a" > "$RP/ba.repos"
 check "update indexes every configured repository" 0 tr ab update
 has "first repository" "Indexed [0-9]+ packages? in .*/a/repo.solv"
 has "second repository" "Indexed [0-9]+ packages? in .*/b/repo.solv"
@@ -1024,16 +1032,23 @@ check "remove it" 0 tr ab -y remove rp-dup
 check "with the order reversed" 0 tr ba -y install rp-dup
 [ "$(cat "$ROOT/usr/share/rp-dup/f")" = from-b ] && ok "installed from the first repository (b)" || bad "wrong repository used" "$(cat "$ROOT/usr/share/rp-dup/f")"
 tr ba -y remove rp-dup >/dev/null 2>&1
-printf 'REPO_DIRS = file://%s\nBULKHEAD = no\n' "$RP/b" > "$RP/url.conf"
+echo "rb = file://$RP/b" > "$RP/url.repos"
 check "a file:// URL is a repository" 0 tr url show rp-dup
-printf 'REPO_DIRS = https://example.invalid/repo\nBULKHEAD = no\n' > "$RP/http.conf"
+echo "web = https://example.invalid/repo" > "$RP/http.repos"
 check "an unfetched remote repository is skipped with a hint" 0 tr http list --available
 has "it says to run update" "has not been fetched yet, run 'tatami update'"
-printf 'BULKHEAD = no\n' > "$RP/default.conf"
 mkdir -p "$ROOT/var/lib/tatami/packages"
 mkp "$ROOT/var/lib/tatami/packages" rp-local 1.0 - - usr/share/rp-local/f:local
-check "without REPO_DIRS the repository is <root>/var/lib/tatami/packages" 0 tr default -y install rp-local
+check "without a repos.conf the repository is <root>/var/lib/tatami/packages" 0 tr default -y install rp-local
 exists "installed from the default repository inside the root" usr/share/rp-local/f
+tr default -y remove rp-local >/dev/null 2>&1
+: > "$ROOT/etc/tatami/repos.conf"
+check "an empty repos.conf falls back to the default repository too" 0 "$TATAMI" -r "$ROOT" -c "$RP/base.conf" -y install rp-local
+printf '# only a comment\n' > "$ROOT/etc/tatami/repos.conf"; "$TATAMI" -r "$ROOT" -c "$RP/base.conf" -y remove rp-local >/dev/null 2>&1
+check "so does one with only comments" 0 "$TATAMI" -r "$ROOT" -c "$RP/base.conf" -y install rp-local
+printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$RP/a" > "$RP/olddirs.conf"
+check "REPO_DIRS in tatami.conf is refused" 1 "$TATAMI" -r "$ROOT" -c "$RP/olddirs.conf" list
+has "with a pointer to repos.conf" "REPO_DIRS is gone: list the repositories in etc/tatami/repos.conf"
 ROOT="$ROOT_MAIN"
 
 echo "# target architecture: the pool follows the target system, mismatches are refused"
@@ -1046,7 +1061,8 @@ ROOT="$AR/root"
 arch_try() { # machine package... : install in a fresh root on a host that reports that machine
 	local mach="$1"; shift
 	rm -rf "$ROOT"; mkdir -p "$ROOT/etc"
-	printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$AR/repo" > "$AR/c.conf"
+	set_repos "$ROOT" "$AR/repo"
+	printf 'BULKHEAD = no\n' > "$AR/c.conf"
 	OUT=$(machine "$mach" "$TATAMI" -r "$ROOT" -c "$AR/c.conf" -y install "$@" 2>&1); rc=$?
 }
 arch_try riscv64 ar-riscv64 ar-noarch; [ $rc -eq 0 ] && ok "a riscv64 target installs riscv64 and noarch packages" || bad "riscv64 target" "$OUT"
@@ -1092,7 +1108,8 @@ STAMP="$T/iso.stamp"; touch "$STAMP"; sleep 1
 # this package ships a file under lib/ whose name is also a real file in the HOST's /usr/lib
 mkp "$T/iso-repo" iso-pkg 1.0 - - "lib/$HF:from the package" lib/isolib.so:lib bin/isotool:tool usr/share/iso/data:data
 publish_index "$T/iso-repo" >/dev/null 2>&1
-printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$T/iso-repo" > "$T/iso.conf"
+printf 'BULKHEAD = no\n' > "$T/iso.conf"
+set_repos "$IR" "$T/iso-repo"
 ti() { "$TATAMI" -r "$IR" -c "$T/iso.conf" "$@"; }
 OUT=$(ti -y install iso-pkg 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "install into the usr-merged root" || bad "install failed" "$OUT"
@@ -1142,7 +1159,8 @@ mkp "$T/hk-repo" hk-lib 1.0 - - usr/lib/libhk.so:lib
 mkp "$T/hk-repo" hk-lib2 1.0 - - usr/lib/libhk2.so:lib2
 mkp "$T/hk-repo" hk-data 1.0 - - usr/share/hk-data/f:data
 publish_index "$T/hk-repo" >/dev/null 2>&1
-printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$T/hk-repo" > "$T/hk.conf"
+printf 'BULKHEAD = no\n' > "$T/hk.conf"
+set_repos "$HK" "$T/hk-repo"
 th() { "$TATAMI" -r "$HK" -c "$T/hk.conf" "$@"; }
 cat > "$HK/etc/tatami/hooks.d/10-libs.hook" <<'HOOK'
 # runs when something below usr/lib changed; checks that the database already lists the package
@@ -1422,7 +1440,8 @@ SM="$T/summary"; rm -rf "$SM"; mkdir -p "$SM/root/etc" "$SM/repo"
 mkp "$SM/repo" sm-a 1.0 - sm-b usr/share/sm-a/f:one
 mkp "$SM/repo" sm-b 1.0 - - usr/share/sm-b/f:one
 mkp "$SM/repo" sm-c 1.0 - - usr/share/sm-c/f:one
-printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$SM/repo" > "$SM/c.conf"
+printf 'BULKHEAD = no\n' > "$SM/c.conf"
+set_repos "$SM/root" "$SM/repo"
 sm() { "$TATAMI" -r "$SM/root" -c "$SM/c.conf" "$@"; }
 smp() { ptyrun "" "$TATAMI" -r "$SM/root" -c "$SM/c.conf" "$@"; }
 sm update >/dev/null 2>&1
