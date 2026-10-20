@@ -279,7 +279,7 @@ int keygen_main(int argc, char** argv)
 				cout << "usage: tatami keygen [-f] [private-key-file]\n"
 					"  makes an Ed25519 key pair; the private key goes to the file (default\n"
 					"  $TATAMI_PRIVKEY or ~/.tatami/privkey, mode 600), the public key to <file>.pub.\n"
-					"  Copy the public key into /etc/tatami/keys/ on every client machine." << endl;
+					"  Copy the public key into /" KEYS_DIR "/ on every client machine." << endl;
 				return 0;
 			} else if (!a.empty() && a[0] == '-')
 				throw runtime_error("invalid option " + a);
@@ -312,8 +312,8 @@ int keygen_main(int argc, char** argv)
 
 		cout << "Private key: " << priv << " (keep it secret)" << endl;
 		cout << "Public key:  " << priv << ".pub" << endl;
-		cout << "Copy the public key file into /etc/tatami/keys/ on every machine that installs your packages:" << endl;
-		cout << "  cp " << priv << ".pub /etc/tatami/keys/" << endl;
+		cout << "Copy the public key file into /" KEYS_DIR "/ on every machine that installs your packages:" << endl;
+		cout << "  cp " << priv << ".pub /" KEYS_DIR "/" << endl;
 	} catch (runtime_error& e) {
 		cerr << "tatami: " << e.what() << endl;
 		return 1;

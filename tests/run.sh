@@ -545,6 +545,25 @@ if variant xzext PKG_EXT=tar.xz; then
 else
 	bad "variant build (PKG_EXT=tar.xz)" "$(tail -5 "$T/var-xzext/build.log")"
 fi
+# a different directory layout: every path is a compile-time constant below the root, in tatami and in tatamk
+if variant lay SYSCONFDIR=/opt/etc DB_DIR=/srv/db CACHEDIR=/srv/cache; then
+	VL="$T/var-lay"; LR="$T/layroot"; rm -rf "$LR" "$T/layrepo" "$T/layhome"; mkdir -p "$LR" "$T/layrepo" "$T/layhome"
+	mkdir -p "$LR/opt/etc/tatami"; echo "lay = $T/layrepo" > "$LR/opt/etc/tatami/repos.conf"
+	HOME="$T/layhome" "$VL/tatami" keygen >/dev/null
+	printf 'name=laypkg\nversion=1\narch=%s\nbuild() { mkdir -p $PKG/usr/share/laypkg; echo lay > $PKG/usr/share/laypkg/f; }\n' "$HARCH" > "$T/layrepo.Tatamifile"
+	OUT=$(HOME="$T/layhome" TATAMI="$VL/tatami" "$VL/tatamk" --no-bulkhead -c "$T/noext.conf" -f "$T/layrepo.Tatamifile" -o "$T/layrepo" 2>&1); rc=$?
+	[ $rc -eq 0 ] && [ "$(head -c 4 "$T/layrepo/repo.solv" 2>/dev/null)" = SOLV ] && [ -f "$T/layrepo/repo.solv.sig" ] && ok "tatamk (SYSCONFDIR=/opt/etc) indexes and signs its output directory" || bad "tatamk with a custom layout (exit $rc)" "$OUT"
+	check "tatami finds the repository in <root>/opt/etc/tatami/repos.conf" 0 "$VL/tatami" -r "$LR" -y install laypkg
+	[ -f "$LR/usr/share/laypkg/f" ] && ok "and installs from it" || bad "not installed"
+	[ -d "$LR/srv/db" ] && ok "the database is below <root>/srv/db (DB_DIR)" || bad "no DB_DIR" "$(find "$LR" -maxdepth 3 | head)"
+	[ ! -e "$LR/var/lib/tatami" ] && [ ! -e "$LR/etc/tatami" ] && ok "nothing was created at the default locations" || bad "default locations used" "$(find "$LR" -maxdepth 3 -path '*tatami*')"
+	printf 'laypkg\n' > "$LR/opt/etc/tatami/hold"
+	check "the hold file is read from SYSCONFDIR too" 0 "$VL/tatami" -r "$LR" -y remove laypkg
+	OUT=$(HOME="$T/layhome" "$VL/tatami" keygen -f 2>&1)
+	echo "$OUT" | grep -q "cp .*privkey.pub /opt/etc/tatami/keys/" && ok "keygen names the key directory of that layout" || bad "keygen message" "$OUT"
+else
+	bad "variant build (custom layout)" "$(tail -5 "$T/var-lay/build.log")"
+fi
 rm -rf "$T"/var-*
 rm -rf "$T/extrepo"; mkdir -p "$T/extrepo"
 # the architecture is part of the name, and an underscore inside it (x86_64) does not confuse the parser
