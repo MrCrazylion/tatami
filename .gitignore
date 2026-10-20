@@ -2,7 +2,7 @@
 *.d
 .depend
 /tatami
-/tatamk
+/tatami-mkpkg
 /tests/work
 .flags
 

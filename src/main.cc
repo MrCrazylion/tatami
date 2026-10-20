@@ -34,7 +34,7 @@ static void print_help()
 	}
 	cout << "  ";
 	cout.width(24);
-	cout << left << "bulkhead <dir> -- <cmd>" << "run a command in a bwrap sandbox (used by tatamk)" << endl;
+	cout << left << "bulkhead <dir> -- <cmd>" << "run a command in a bwrap sandbox (used by tatami-mkpkg)" << endl;
 	cout << "  ";
 	cout.width(24);
 	cout << left << "keygen [file]" << "make an Ed25519 key pair for signing packages (~/.tatami/privkey)" << endl;
@@ -43,7 +43,7 @@ static void print_help()
 	cout << left << "sign <file> [key]" << "write <file>.sig, the Ed25519 signature of a file" << endl;
 	cout << "  ";
 	cout.width(24);
-	cout << left << "pack <meta> <dir> <out>" << "create a package archive (used by tatamk), -z <compression>" << endl;
+	cout << left << "pack <meta> <dir> <out>" << "create a package archive (used by tatami-mkpkg), -z <compression>" << endl;
 	cout << endl
 	     << "options:" << endl
 	     << "  -y, --yes            do not ask for confirmation" << endl

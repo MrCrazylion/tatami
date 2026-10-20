@@ -2,7 +2,7 @@
 
 A small, fast package manager for Linux, built on the design of CRUX's pkgutils.
 
-- **Simple (KISS).** One binary, `tatami`, and one builder script, `tatamk`. The package
+- **Simple (KISS).** One binary, `tatami`, and one builder script, `tatami-mkpkg`. The package
   database, configuration, journal and hooks are plain text files. Everything works with
   no configuration at all and stays offline unless you add a remote repository.
 - **Atomic transactions.** Everything one command does is applied completely or not at
@@ -33,7 +33,7 @@ All libraries are **Git submodules** in `deps/`, pinned to release tags and buil
 static archives, so nothing is taken from your distribution's packages.
 
 To **run** it, the compiled `tatami` needs only libc and libstdc++ (`make STATIC=yes`
-produces a fully static binary). `tatamk` additionally needs `bash`; building packages in
+produces a fully static binary). `tatami-mkpkg` additionally needs `bash`; building packages in
 its sandbox needs [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`), and
 the default download command needs `curl`.
 
@@ -72,12 +72,12 @@ PKG_COMPRESSION=xz
 
 | Key | Default | Meaning |
 |---|---|---|
-| `PREFIX` | `/usr` | `make install` puts `tatami` and `tatamk` in `$(PREFIX)/bin` and the manual pages in `$(PREFIX)/share/man` |
+| `PREFIX` | `/usr` | `make install` puts `tatami` and `tatami-mkpkg` in `$(PREFIX)/bin` and the manual pages in `$(PREFIX)/share/man` |
 | `SYSCONFDIR` | `/etc` | configuration directory: `$(SYSCONFDIR)/tatami/` |
 | `DB_DIR` | `/var/lib/tatami` | package database, journal, indexes of remote repositories, local repository |
 | `CACHEDIR` | `/var/cache/tatami` | downloaded packages |
 | `PKG_EXT` | `tar.pkg` | package file extension (no leading dot); empty means `tar.<compression>` |
-| `PKG_COMPRESSION` | `zst` | compression `tatamk` uses: `gz`, `zst`, `xz`, `bz2`, `lz4`, `lzma` or `none` |
+| `PKG_COMPRESSION` | `zst` | compression `tatami-mkpkg` uses: `gz`, `zst`, `xz`, `bz2`, `lz4`, `lzma` or `none` |
 
 Leave a line commented out to keep the default; do not leave an active line with an empty
 value (`PREFIX=`), because that makes the variable intentionally empty instead of using the
@@ -99,7 +99,7 @@ sudo make install
 ```
 
 The first build also compiles the bundled libraries, which takes a few minutes. `make
-install` installs the programs, the manual pages (`tatami(8)`, `tatamk(8)`,
+install` installs the programs, the manual pages (`tatami(8)`, `tatami-mkpkg(8)`,
 `tatami.conf(5)`), an example `ldconfig` hook, and a default `tatami.conf`. An existing
 configuration file or hook is never overwritten.
 
@@ -129,7 +129,7 @@ The extension and the compression are decided when tatami is built (`PKG_EXT` an
 `PKG_COMPRESSION` in `build.conf`, see above) and are not configurable afterwards: putting
 either in `tatami.conf` is an error. An empty `PKG_EXT` means `tar.<compression>` (`tar.zst`,
 `tar.xz`, ...), and every compression is then accepted. The only run-time choice is
-`tatamk -z <compression>`, for one build.
+`tatami-mkpkg -z <compression>`, for one build.
 
 All compression formats are read and written by tatami itself.
 
@@ -137,7 +137,7 @@ All compression formats are read and written by tatami itself.
 
 Packages for other architectures are refused. tatami always uses the machine's architecture
 (`uname -m`); there is no setting for it. `noarch` packages are accepted everywhere.
-`tatamk` takes the architecture from `arch=` in the recipe. It is required: a recipe without it is refused, with no fallback to the
+`tatami-mkpkg` takes the architecture from `arch=` in the recipe. It is required: a recipe without it is refused, with no fallback to the
 build machine (use `arch=noarch` for architecture-independent packages).
 
 ### Other useful settings
@@ -218,7 +218,7 @@ is never re-fetched.
 
 **3. That is all.** From now on:
 
-- `tatamk` finds `~/.tatami/privkey` (or the file named by `$TATAMI_PRIVKEY`) and signs
+- `tatami-mkpkg` finds `~/.tatami/privkey` (or the file named by `$TATAMI_PRIVKEY`) and signs
   automatically. It refreshes the `repo.solv` index of the output directory and writes
   `<package>.sig` and `repo.solv.sig` next to it. `--no-sign` skips this.
 - `tatami update` and `tatami install` fetch the `.sig` files of everything they download
@@ -252,7 +252,7 @@ main = https://mirror.example.com/tatami/x86_64
   and needs a trusted key in `/etc/tatami/keys/`. `tatami update` fetches its index; `tatami install` fetches the
   packages and deletes them from the cache once the transaction has committed.
   The remote directory must contain the packages, `repo.solv`, and their `.sig` files, which
-  is exactly what `tatamk` produces in its output directory.
+  is exactly what `tatami-mkpkg` produces in its output directory.
 
 With no `repos.conf` at all, tatami uses the local directory `/var/lib/tatami/packages`, so
 it is fully offline by default.
@@ -287,7 +287,7 @@ Build it into your local repository (run it as a user who may write to that dire
 build into another directory and list it in `repos.conf`):
 
 ```sh
-tatamk -o /var/lib/tatami/packages
+tatami-mkpkg -o /var/lib/tatami/packages
 ```
 
 ```
@@ -299,7 +299,7 @@ The build runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandb
 system is read-only, there is no network, and only the package directory is writable. Add
 `--no-bulkhead` to build without it. To run a script when the package is installed, put
 `pre_install()` and `post_install()` functions in a file called `tatami.install` next to the
-`Tatamifile`; `tatamk` bundles it automatically.
+`Tatamifile`; `tatami-mkpkg` bundles it automatically.
 
 ### Install
 
@@ -327,7 +327,7 @@ directly with `sudo tatami install ./hello_1.0-1_x86_64.tar.pkg`.
 
 ## More information
 
-- `man tatami`, `man tatamk`, `man tatami.conf`: complete reference
+- `man tatami`, `man tatami-mkpkg`, `man tatami.conf`: complete reference
 - [`ARCHITECTURE.md`](ARCHITECTURE.md): how the transaction engine, the verification and the
   build system work, and what is not covered yet
 

@@ -19,7 +19,7 @@ tatami \- package manager with dependency resolution and atomic transactions
 installs, upgrades and removes binary packages.
 It is built on the design of pkgutils: a plain\-text package database, packages
 that are tar archives, and a separate tool,
-.BR tatamk (8),
+.BR tatami\-mkpkg (8),
 that builds them.
 Dependencies are resolved by libsolv; archives are read and written by libarchive.
 The libraries are built into the program (linked as static archives), so no external
@@ -120,7 +120,7 @@ The commands
 and
 .B bulkhead
 are used by
-.BR tatamk (8)
+.BR tatami\-mkpkg (8)
 and are not meant to be called by hand.
 .SH OPTIONS
 .TP
@@ -236,7 +236,7 @@ file is replaced.
 The rename is part of the transaction: a rollback puts the old file back.
 .SH SECURITY
 Packages and indexes can be signed with Ed25519 (RFC 8032, through libsodium).
-.B tatamk
+.B tatami\-mkpkg
 signs what it builds;
 .B tatami
 verifies what it downloads.
@@ -294,7 +294,7 @@ tatami itself contains no network code.
 A package built with a
 .B tatami.install
 file (see
-.BR tatamk (8))
+.BR tatami\-mkpkg (8))
 contains the script as the hidden member
 .BR .INSTALL ,
 which is never installed as a file.
@@ -369,5 +369,5 @@ Set by tatami for install scripts and hooks.
 .B 0
 on success, non\-zero if the command failed. A failed transaction changes nothing.
 .SH SEE ALSO
-.BR tatamk (8),
+.BR tatami\-mkpkg (8),
 .BR tatami.conf (5)

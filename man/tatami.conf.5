@@ -1,12 +1,12 @@
 .TH TATAMI.CONF 5 "" "tatami"
 .SH NAME
-tatami.conf \- configuration of tatami and tatamk, held packages, file rules, repository lists and hooks
+tatami.conf \- configuration of tatami and tatami\-mkpkg, held packages, file rules, repository lists and hooks
 .SH DESCRIPTION
 .B tatami.conf
 configures
 .BR tatami (8)
 and
-.BR tatamk (8).
+.BR tatami\-mkpkg (8).
 It is optional: if it is missing, empty or unreadable the built\-in defaults are used
 and tatami works offline with the local repository
 .BR /var/lib/tatami/packages .
@@ -87,7 +87,7 @@ unsigned remote data is accepted (the SHA\-256 checksums of the index are still 
 (the default) or
 .BR no :
 whether
-.BR tatamk
+.BR tatami\-mkpkg
 builds in a
 .BR bwrap (1)
 sandbox.
@@ -97,7 +97,7 @@ The package extension
 default
 .BR tar.pkg )
 and the compression of
-.BR tatamk
+.BR tatami\-mkpkg
 .RB ( PKG_COMPRESSION ,
 default
 .BR zst )
@@ -112,9 +112,9 @@ or
 in
 .B tatami.conf
 is an error, and the environment is ignored by
-.BR tatamk ;
+.BR tatami\-mkpkg ;
 only
-.B tatamk \-z
+.B tatami\-mkpkg \-z
 overrides the compression, for one build.
 An empty
 .B PKG_EXT
@@ -127,7 +127,7 @@ There is no setting for it: tatami uses the machine architecture
 Packages of any other architecture are refused;
 .B noarch
 packages always fit.
-.BR tatamk
+.BR tatami\-mkpkg
 takes the architecture from
 .B arch=
 in the recipe, which is required.
@@ -288,7 +288,7 @@ both with
 and verifies them (see
 .BR "TRUSTED KEYS" ).
 Publish such a repository by putting the packages and the files made by
-.BR tatamk (8)
+.BR tatami\-mkpkg (8)
 (the index and the signatures) on a server.
 .PP
 If the files do not exist or list nothing, the only repository is the local directory
@@ -390,4 +390,4 @@ local = /srv/packages
 .fi
 .SH SEE ALSO
 .BR tatami (8),
-.BR tatamk (8)
+.BR tatami\-mkpkg (8)

@@ -2,9 +2,9 @@
 
 tatami is a small package manager for Linux in the spirit of CRUX's pkgutils: a
 plain-text package database, packages that are tar archives, and a separate builder
-(`tatamk`). On top of that it has an apt-style command line and a real dependency
+(`tatami-mkpkg`). On top of that it has an apt-style command line and a real dependency
 solver (libsolv). About 6,300 lines of C++11 and Bash, one multi-purpose binary,
-`tatami`, plus the recipe builder `tatamk`.
+`tatami`, plus the recipe builder `tatami-mkpkg`.
 
 This document describes what exists today, why it is built that way, and where the
 limits are. It does not describe plans.
@@ -51,7 +51,7 @@ limits are. It does not describe plans.
 | `repos.cc` | `repos.conf` / `repos.d`, running `FETCHCMD`, the progress bar |
 | `sign.cc` | Ed25519 and SHA-256 through libsodium; `keygen` and `sign` |
 | `hooks.cc` | Post-transaction hooks |
-| `bulkhead.cc` | The bubblewrap command line used by `tatamk` |
+| `bulkhead.cc` | The bubblewrap command line used by `tatami-mkpkg` |
 | `config.cc`, `meta.cc`, `util.cc` | Configuration, package metadata, helpers |
 
 **Dependency resolution** is delegated to libsolv: installed packages form the
@@ -151,7 +151,7 @@ file is stored in the cache under its final name or installed.
 
 ### SHA-256 package hashes (integrity binding)
 
-- `tatami update` (on a local repository, and so `tatamk` for its output directory) computes the SHA-256 of every package file and
+- `tatami update` (on a local repository, and so `tatami-mkpkg` for its output directory) computes the SHA-256 of every package file and
   stores it in `repo.solv` as libsolv's standard `SOLVABLE_CHECKSUM`; `tatami show`
   prints it.
 - A package downloaded from a remote repository is hashed with libsodium immediately
@@ -172,7 +172,7 @@ file is stored in the cache under its final name or installed.
   0700) and `.pub`, and prints the command that copies the `.pub` file to `/etc/tatami/keys/`; it never overwrites a key
   without `-f`. `tatami sign <file> [key]` writes `<file>.sig`. Keys are hex; the
   public key may also be given as base64.
-- **Producer.** `tatamk` signs as part of the build when `$TATAMI_PRIVKEY` or
+- **Producer.** `tatami-mkpkg` signs as part of the build when `$TATAMI_PRIVKEY` or
   `~/.tatami/privkey` exists: it refreshes the output directory's `repo.solv`, signs the
   package and the index. `--no-sign` skips it.
 - **Trust store.** The trusted keys are the files of `<root>/etc/tatami/keys/` (the
@@ -282,13 +282,13 @@ with pacman's `IgnorePkg`). Held packages that are not installed are ignored.
   override a default, uncomment and edit its line. The `make` command line beats both.
   `SYSCONFDIR`, `DB_DIR` and `CACHEDIR` are validated and compiled in as paths *below the
   root*, so a custom layout still works with `--root`; `PKG_EXT` is compiled into tatami and
-  substituted into `tatamk`, as is `PKG_COMPRESSION`; **both are compile-time only** (`tatami.conf` refuses them, `tatamk` ignores the environment, only `tatamk -z` overrides the compression); `PREFIX`, `BINDIR`, `MANDIR` and
+  substituted into `tatami-mkpkg`, as is `PKG_COMPRESSION`; **both are compile-time only** (`tatami.conf` refuses them, `tatami-mkpkg` ignores the environment, only `tatami-mkpkg -z` overrides the compression); `PREFIX`, `BINDIR`, `MANDIR` and
   `DESTDIR` control `make install`. The layout defaults to the FHS: `/etc/tatami`,
   `/var/lib/tatami`, `/var/cache/tatami`.
 
 ---
 
-## 5. Package building — `tatamk`
+## 5. Package building — `tatami-mkpkg`
 
 ### The `Tatamifile`
 
@@ -346,7 +346,7 @@ arguments, no command line is built from package data), and the file is removed.
 
 ### Signing
 
-See §3: with a key present, `tatamk` refreshes and signs the output directory's index and
+See §3: with a key present, `tatami-mkpkg` refreshes and signs the output directory's index and
 the package as part of the build.
 
 ---
@@ -382,7 +382,7 @@ ships the `ldconfig` hook as an example.
   local directory `var/lib/tatami/packages`. Nothing is downloaded unless a remote
   repository is configured explicitly.
 - **Local repositories** are read in place. `tatami update` writes the binary
-  `repo.solv` (there is no separate `index` command; `tatamk` indexes its output directory by running `update` against a throw-away root that lists it as the only repository); if packages are newer than the index, tatami warns and scans the
+  `repo.solv` (there is no separate `index` command; `tatami-mkpkg` indexes its output directory by running `update` against a throw-away root that lists it as the only repository); if packages are newer than the index, tatami warns and scans the
   directory instead, so results are never wrong, only slower.
 - **Remote repositories.** `tatami update` downloads `repo.solv` (and its signature) to
   `var/lib/tatami/repos/<name>/`; `tatami install` downloads packages to
@@ -394,7 +394,7 @@ ships the `ldconfig` hook as an example.
 ## 7. Testing and reliability
 
 `tests/run.sh` is a single end-to-end script: **689 checks**, all passing, plus
-`tests/test_permissions.sh` (5 checks). The suite builds real packages with `tatamk`,
+`tests/test_permissions.sh` (5 checks). The suite builds real packages with `tatami-mkpkg`,
 drives `tatami` against scratch roots, and compares complete filesystem snapshots
 before and after failures. It covers:
 

@@ -19,7 +19,7 @@ struct package_t {
 // Scans the whole archive. Throws if the package has no .META member.
 package_t pkg_open(const string& filename);
 
-// Reads only the metadata. Fast when .META is the first member (tatamk does so).
+// Reads only the metadata. Fast when .META is the first member (tatami-mkpkg does so).
 pkgmeta pkg_read_meta(const string& filename);
 
 // Extracts the package below 'root' (which must be absolute and end in '/').

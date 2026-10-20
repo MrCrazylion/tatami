@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-#  tatamk #VERSION#
+#  tatami-mkpkg #VERSION#
 #
 #  Builds a tatami package from a recipe (Tatamifile). The recipe format is
 #  the pkgmk Pkgfile format with real dependency fields:
@@ -91,7 +91,7 @@ while [ $# -gt 0 ]; do
 	--no-bulkhead|--no-sandbox) BULKHEAD_OPT="no" ;;
 	--bulkhead) BULKHEAD_OPT="yes" ;;
 	--no-sign) SIGN="no" ;;
-	-v|--version) echo "tatamk #VERSION#"; exit 0 ;;
+	-v|--version) echo "tatami-mkpkg #VERSION#"; exit 0 ;;
 	-h|--help) print_help; exit 0 ;;
 	*) die "invalid option $1" ;;
 	esac
@@ -126,7 +126,7 @@ elif [ "$COMPRESSION" = none ]; then
 else
 	PKG_EXTENSION="tar.$COMPRESSION"
 fi
-command -v "$TATAMI" >/dev/null 2>&1 || die "tatamk needs the tatami binary to create packages ('$TATAMI' not found in PATH; set TATAMI=/path/to/tatami)"
+command -v "$TATAMI" >/dev/null 2>&1 || die "tatami-mkpkg needs the tatami binary to create packages ('$TATAMI' not found in PATH; set TATAMI=/path/to/tatami)"
 BULKHEAD="${BULKHEAD_OPT:-$(conf_get BULKHEAD)}"
 BULKHEAD="${BULKHEAD:-yes}"
 case "$BULKHEAD" in
@@ -240,7 +240,7 @@ if [ "$BULKHEAD" = yes ]; then
 		cp -a "$2"/. "$SRC"/
 		cd "$SRC"
 		build
-	' tatamk-build "$RECIPE_FILE" "$SRC"
+	' tatami-mkpkg-build "$RECIPE_FILE" "$SRC"
 else
 	( set -e; cd "$SRC"; build )
 fi
@@ -290,7 +290,7 @@ fi
 if [ -n "$PRIVKEY" ]; then
 	info "Signing with $PRIVKEY"
 	# 'tatami update' indexes a local repository: hand it the output directory as the only one
-	IDXROOT=$(mktemp -d "${TMPDIR:-/tmp}/tatamk-index.XXXXXX") || die "could not create a temporary directory"
+	IDXROOT=$(mktemp -d "${TMPDIR:-/tmp}/tatami-mkpkg-index.XXXXXX") || die "could not create a temporary directory"
 	mkdir -p "$IDXROOT@SYSCONFDIR@/tatami"      # the build-time SYSCONFDIR, below the temporary root
 	printf 'out = %s\n' "$OUTDIR" > "$IDXROOT@SYSCONFDIR@/tatami/repos.conf"
 	"$TATAMI" -r "$IDXROOT" update >/dev/null || { rm -rf "$IDXROOT"; die "could not update $OUTDIR/repo.solv"; }

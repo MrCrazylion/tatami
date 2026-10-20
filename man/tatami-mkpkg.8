@@ -1,11 +1,11 @@
-.TH TATAMK 8 "" "tatami"
+.TH TATAMI\-MKPKG 8 "" "tatami"
 .SH NAME
-tatamk \- build tatami packages from a recipe
+tatami\-mkpkg \- build tatami packages from a recipe
 .SH SYNOPSIS
-.B tatamk
+.B tatami\-mkpkg
 .RI [ options ]
 .SH DESCRIPTION
-.B tatamk
+.B tatami\-mkpkg
 reads a recipe, the
 .BR Tatamifile ,
 in the current directory, builds the software it describes into a staging directory
@@ -52,7 +52,7 @@ An element may not contain a comma.
 .TP
 .B arch
 Required. There is no default:
-without it (or with an empty value) tatamk prints
+without it (or with an empty value) tatami\-mkpkg prints
 .B Error: arch is not defined in Tatamifile
 and exits with status 1.
 Use the target architecture, or
@@ -120,7 +120,7 @@ The key is the file named by the environment variable
 it is made with
 .BR "tatami keygen" .
 Right after the package is written,
-.B tatamk
+.B tatami\-mkpkg
 .IP \(bu 3
 refreshes the index
 .B repo.solv

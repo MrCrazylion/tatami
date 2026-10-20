@@ -52,13 +52,13 @@ NAME = tatami-$(VERSION)
 # content). An empty PKG_EXT means tar.<compression> (tar.zst, tar.xz, ...), all of
 # which tatami then accepts. Another extension for both tools:
 #   make PKG_EXT=myext
-# tatami gets it as -DDEFAULT_PKG_EXT, tatamk as the @DEFAULT_PKG_EXT@ substitution.
+# tatami gets it as -DDEFAULT_PKG_EXT, tatami-mkpkg as the @DEFAULT_PKG_EXT@ substitution.
 # It is fixed: there is no run-time override (tatami.conf refuses PKG_EXT).
 PKG_EXT ?= tar.pkg
 PKG_EXT := $(strip $(PKG_EXT))
 
-# The compression tatamk uses unless -z or a PKG_EXT that names one says otherwise:
-# gz, zst, xz, bz2, lz4, lzma or none. tatamk gets it as the
+# The compression tatami-mkpkg uses unless -z or a PKG_EXT that names one says otherwise:
+# gz, zst, xz, bz2, lz4, lzma or none. tatami-mkpkg gets it as the
 # @DEFAULT_PKG_COMPRESSION@ substitution; there is no run-time setting for it.
 PKG_COMPRESSION ?= zst
 PKG_COMPRESSION := $(strip $(PKG_COMPRESSION))
@@ -152,7 +152,7 @@ endif
 SRCS = main.cc bulkhead.cc commands.cc engine.cc resolver.cc db.cc txn.cc rootfs.cc hooks.cc pack.cc pkgarchive.cc meta.cc config.cc repos.cc sign.cc util.cc
 OBJECTS = $(SRCS:%.cc=src/%.o)
 
-all: tatami tatamk
+all: tatami tatami-mkpkg
 
 # Rebuild when VERSION, PKG_EXT or a compiled-in path changes
 FLAGS = $(VERSION) $(PKG_EXT) $(PKG_COMPRESSION) $(RT_SYSCONFDIR) $(RT_DB_DIR) $(RT_CACHEDIR)
@@ -286,7 +286,7 @@ $(LIBARCHIVE_BUILD)/Makefile: $(ZLIB_A) $(ZSTD_A) $(XZ_A) $(BZIP2_A) $(LZ4_A)
 $(LIBARCHIVE_A): $(LIBARCHIVE_BUILD)/Makefile
 	$(MAKE) -C $(LIBARCHIVE_BUILD) archive_static
 
-tatamk: tatamk.in .flags
+tatami-mkpkg: tatami-mkpkg.in .flags
 	sed -e "s/#VERSION#/$(VERSION)/" -e "s/@DEFAULT_PKG_EXT@/$(PKG_EXT)/" \
 	    -e "s/@DEFAULT_PKG_COMPRESSION@/$(PKG_COMPRESSION)/" \
 	    -e "s|@SYSCONFDIR@|$(SYSCONFDIR)|" $< > $@
@@ -312,9 +312,9 @@ install: all
 	mkdir -p $(DESTDIR)$(BINDIR) $(DESTDIR)$(ETCDIR) $(DESTDIR)$(ETCDIR)/tatami/hooks.d $(DESTDIR)$(ETCDIR)/tatami/keys \
 		$(DESTDIR)$(VARDIR)/packages
 	install -m0755 tatami $(DESTDIR)$(BINDIR)/tatami
-	install -m0755 tatamk $(DESTDIR)$(BINDIR)/tatamk
+	install -m0755 tatami-mkpkg $(DESTDIR)$(BINDIR)/tatami-mkpkg
 	mkdir -p $(DESTDIR)$(MANDIR)/man8 $(DESTDIR)$(MANDIR)/man5
-	install -m0644 man/tatami.8 man/tatamk.8 $(DESTDIR)$(MANDIR)/man8/
+	install -m0644 man/tatami.8 man/tatami-mkpkg.8 $(DESTDIR)$(MANDIR)/man8/
 	install -m0644 man/tatami.conf.5 $(DESTDIR)$(MANDIR)/man5/
 	@if [ -e $(DESTDIR)$(ETCDIR)/tatami/tatami.conf ]; then \
 		echo "keeping existing $(DESTDIR)$(ETCDIR)/tatami/tatami.conf"; \
@@ -340,7 +340,7 @@ install: all
 # keeps the slow-to-rebuild vendored libraries; 'distclean' resets them too.
 # build.conf is yours and is never removed.
 clean:
-	rm -f src/*.o src/*.d tatami tatamk .flags
+	rm -f src/*.o src/*.d tatami tatami-mkpkg .flags
 
 distclean: clean
 	rm -rf $(LIBSOLV_BUILD) $(ZLIB_BUILD) $(ZSTD_BUILD) $(XZ_BUILD) $(BZIP2_BUILD) $(LZ4_BUILD) $(LIBARCHIVE_BUILD) $(SODIUM_BUILD)
