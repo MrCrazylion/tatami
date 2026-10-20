@@ -194,6 +194,26 @@ transaction, the next command that modifies the system reads the journal first.
 Without a commit record the whole run is rolled back; with one, the database
 decides: if it shows the result of every operation the run is finished,
 otherwise it is rolled back.
+.PP
+Before asking, a command that installs, upgrades or removes prints, when standard
+output is a terminal, a summary in the style of FreeBSD's pkg:
+the packages grouped under
+.B "New packages to be INSTALLED:"
+(the ones named on the command line),
+.BR "Dependencies to be INSTALLED:" " (pulled in to satisfy requirements)" ,
+.BR "Packages to be UPGRADED:" " (" "name: old -> new" ),
+.B "Packages to be DOWNGRADED:"
+and
+.BR "Packages to be REMOVED:" ,
+the number of packages in each group (for installs with the split, \fB(Y requested, Z dependencies)\fR), how much space the process will require or free,
+and how much is to be downloaded, and then asks
+.BR "Proceed with this action? [Y/n]:" .
+Nothing in this output uses colours or escape codes.
+When the output is not a terminal (a pipe or a log) the plain lists and the one-line
+count are printed instead, so scripts see a stable format.
+The size to be extracted of a remote package comes from its index; it is stored in
+.B repo.solv
+when a repository is indexed (a package whose index lacks it counts as 0).
 .SH CONFIGURATION FILES
 A file that an
 .B UPGRADE
@@ -262,7 +282,13 @@ URL, are never checked for a signature or a checksum and need no key.
 Downloads are made by the command
 .B FETCHCMD
 of the configuration file, which is run directly (not through a shell).
-Its progress output is replaced by tatami's own progress bar.
+On a terminal its progress output is replaced by tatami's own bar, in plain text like
+pacman's:
+.RS
+.nf
+sm-a_1.0_x86_64.tar.pkg   [##########....................]  33%
+.fi
+.RE
 tatami itself contains no network code.
 .SH INSTALL SCRIPTS
 A package built with a

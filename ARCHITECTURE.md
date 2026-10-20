@@ -216,6 +216,12 @@ remote fetch path.
   `fork`/`exec`, **never through a shell**, so nothing in a URL is interpreted. The
   child's stderr goes through a `pipe()` and tatami draws its own progress bar from the
   percentages; the raw output is never shown. tatami itself contains no network code.
+  On a terminal the bar is plain text and drawn in place with `\r`
+  (`name   [####......]  33%`, fixed width), and before the `[Y/n]` question a FreeBSD-style
+  summary lists the packages by group with counts and the space/download sizes (the unpacked
+  size of every package is stored in `repo.solv` as `SOLVABLE_INSTALLSIZE` when indexing;
+  a removed package's size is that of its files on disk). Neither is used when stdout is
+  not a terminal, so logs and scripts see the stable plain format.
 - **Privileges.** Commands that modify the system require root (unless `--simulate`).
 
 ### Known limits

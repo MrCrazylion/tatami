@@ -1380,16 +1380,94 @@ os.waitpid(pid, 0)
 sys.stdout.write(out.decode("utf-8", "replace").replace("\r", "<CR>"))
 PY
 )
-echo "$PROGOUT" | grep -q '\[=*>* *\]  *25%' && ok "a native bar is drawn from the parsed percentages (25%)" || bad "no bar at 25%" "$PROGOUT"
-echo "$PROGOUT" | grep -q '\[=\{30\}\] 100%' && ok "the bar ends full at 100%" || bad "no full bar" "$PROGOUT"
-echo "$PROGOUT" | grep -q '#' && bad "raw curl progress leaked through" "$PROGOUT" || ok "the raw progress text is hidden"
+echo "$PROGOUT" | grep -q 'repo.solv  *\[#\{7\}\.\{23\}\]  25%' && ok "a pacman style bar is drawn from the parsed percentages: name [#######.....] 25%" || bad "no bar at 25%" "$PROGOUT"
+echo "$PROGOUT" | grep -q 'repo.solv  *\[#\{30\}\] 100%' && ok "the bar ends full at 100%" || bad "no full bar" "$PROGOUT"
+echo "$PROGOUT" | grep -q '<CR>repo.solv' && ok "each step redraws the same line with a carriage return" || bad "no carriage return redraw" "$PROGOUT"
+[ "$(echo "$PROGOUT" | grep -o '<CR>repo.solv.*' | head -3 | awk '{print length($0)}' | sort -u | wc -l)" = 1 ] && ok "every redraw has the same width, so it covers the one before" || bad "bar width changes" "$PROGOUT"
+echo "$PROGOUT" | grep -q '100\.0%' && bad "raw curl progress leaked through" "$PROGOUT" || ok "the raw progress text is hidden"
+echo "$PROGOUT" | grep -q '\[=' && bad "the old bar style is still drawn" "$PROGOUT" || ok "no = or > bar characters, no colours or escape codes"
+echo "$PROGOUT" | grep -q $'\033' && bad "an escape code was printed" || ok "no ANSI escape codes"
 OUT=$("$TATAMI" -r "$RR" -c "$T/prog.conf" update 2>&1)
-echo "$OUT" | grep -q '\[=' && bad "a bar was drawn without a terminal" "$OUT" || ok "no bar when stdout is not a terminal"
+echo "$OUT" | grep -q '\[#' && bad "a bar was drawn without a terminal" "$OUT" || ok "no bar when stdout is not a terminal"
 echo "$OUT" | grep -q '#' && bad "raw text without terminal" "$OUT" || ok "raw progress hidden without a terminal too"
 printf '#!/bin/sh\necho "curl: (22) The requested URL returned error: 404" >&2\nexit 22\n' > "$T/fail-fetch"; chmod +x "$T/fail-fetch"
 printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\nFETCHCMD = %s %%URL%% %%DEST%%\n' "$T/fail-fetch" > "$T/failmsg.conf"
 OUT=$("$TATAMI" -r "$RR" -c "$T/failmsg.conf" update 2>&1)
 echo "$OUT" | grep -q "exit status 22: curl: (22) The requested URL returned error: 404" && ok "a failing command's last message is in the error" || bad "no failure message" "$OUT"
+echo
+
+echo "# transaction summary and prompt on a terminal"
+ptyrun() { # <stdin text or ""> <tatami args...>: runs tatami on a pseudo terminal, prints what it wrote
+	python3 - "$@" <<'PY'
+import os, pty, sys, time
+text = sys.argv[1]; args = sys.argv[2:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(args[0], args)
+out = b""
+if text:
+    time.sleep(0.5); os.write(fd, text.encode())
+while True:
+    try:
+        d = os.read(fd, 4096)
+    except OSError:
+        break
+    if not d: break
+    out += d
+os.waitpid(pid, 0)
+sys.stdout.write(out.decode("utf-8", "replace").replace("\r\n", "\n"))
+PY
+}
+SM="$T/summary"; rm -rf "$SM"; mkdir -p "$SM/root/etc" "$SM/repo"
+mkp "$SM/repo" sm-a 1.0 - sm-b usr/share/sm-a/f:one
+mkp "$SM/repo" sm-b 1.0 - - usr/share/sm-b/f:one
+mkp "$SM/repo" sm-c 1.0 - - usr/share/sm-c/f:one
+printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$SM/repo" > "$SM/c.conf"
+sm() { "$TATAMI" -r "$SM/root" -c "$SM/c.conf" "$@"; }
+smp() { ptyrun "" "$TATAMI" -r "$SM/root" -c "$SM/c.conf" "$@"; }
+sm update >/dev/null 2>&1
+OUT=$(smp -s install sm-a); OUT=$(echo "$OUT" | sed 's/\t/>/')
+has "installs are grouped under a header" "^New packages to be INSTALLED:$"
+has "the requested package is indented under it" "^>sm-a: 1.0$"
+has "dependencies get their own header" "^Dependencies to be INSTALLED:$"
+has "with the dependency under it" "^>sm-b: 1.0$"
+[ "$(echo "$OUT" | grep '^>sm-a\|^>sm-b\|^New packages\|^Dependencies' | paste -sd'|' -)" = "New packages to be INSTALLED:|>sm-a: 1.0|Dependencies to be INSTALLED:|>sm-b: 1.0" ] && ok "each package is under the right header, requested ones first" || bad "grouping" "$OUT"
+has "the count shows the breakdown" "^Number of packages to be installed: 2 \(1 requested, 1 dependencies\)$"
+has "the space needed" "^The process will require [0-9.<]+ ?[0-9.]* ?MiB more space\.$"
+OUT=$(smp -s install sm-b | sed 's/\t/>/')
+has "a package nothing else is needed for has no dependencies header" "^Number of packages to be installed: 1 \(1 requested, 0 dependencies\)$"
+hasnt "no empty Dependencies header" "^Dependencies to be INSTALLED"
+OUT=$(smp -s install sm-a | sed 's/\t/>/')
+hasnt "no download line for local packages" "to be downloaded"
+hasnt "the plain format is not used on a terminal" "to install, "
+hasnt "no ANSI escape codes" $'\033'
+OUT=$(sm -s install sm-a 2>&1)
+has "without a terminal the plain list stays" "The following NEW packages will be installed:"
+has "and the plain counts" "2 to install, 0 to upgrade, 0 to remove"
+hasnt "and none of the new summary" "Number of packages to be|The process will"
+sm -y install sm-a sm-c >/dev/null 2>&1
+mkp "$SM/repo" sm-a 2.0 - sm-b usr/share/sm-a/f:two
+sm update >/dev/null 2>&1
+OUT=$(smp -s upgrade | sed 's/\t/>/')
+has "upgrades show old -> new" "^Packages to be UPGRADED:$"
+has "for each package" "^>sm-a: 1.0 -> 2.0$"
+has "with its count" "^Number of packages to be upgraded: 1$"
+OUT=$(smp -s remove sm-c | sed 's/\t/>/')
+has "removals are grouped too" "^Packages to be REMOVED:$"
+has "with the package" "^>sm-c: 1.0$"
+has "the count" "^Number of packages to be removed: 1$"
+has "and the space freed" "^The process will free [0-9.<]+ ?[0-9.]* ?MiB space\.$"
+OUT=$(ptyrun "n
+" "$TATAMI" -r "$SM/root" -c "$SM/c.conf" remove sm-c)
+has "the question is 'Proceed with this action? [Y/n]: '" "Proceed with this action\? \[Y/n\]: "
+has "answering n aborts" "aborted"
+[ -f "$SM/root/usr/share/sm-c/f" ] && ok "and nothing was removed" || bad "removed although refused"
+OUT=$(ptyrun "y
+" "$TATAMI" -r "$SM/root" -c "$SM/c.conf" remove sm-c)
+[ ! -f "$SM/root/usr/share/sm-c/f" ] && ok "answering y removes it" || bad "not removed after y" "$OUT"
+# a remote package: the download size
+OUT=$(ptyrun "" "$TATAMI" -r "$RR" -c "$T/prog.conf" -s install rm-app)
+echo "$OUT" | grep -qE "^[0-9.<]+ ?[0-9.]* ?MiB to be downloaded\.$" && ok "a remote package announces the size to be downloaded" || bad "no download size" "$OUT"
 echo
 
 echo "# signatures: Ed25519, checked for remote repositories and packages only"

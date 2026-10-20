@@ -127,36 +127,44 @@ int parse_progress(const string& segment)
 namespace {
 
 const int BAR_WIDTH = 30;
+const int LABEL_WIDTH = 32;
 
-void draw_bar(int percent)
+// pacman style, plain text:  name   [#########.....................]  30%
+// The line has a fixed width, so each \r redraw covers the previous one completely.
+void draw_bar(const string& label, int percent)
 {
+	string name = label;
+	if ((int)name.size() > LABEL_WIDTH)
+		name = name.substr(0, LABEL_WIDTH - 3) + "...";
+	name.resize(LABEL_WIDTH, ' ');
+
 	const int filled = percent * BAR_WIDTH / 100;
 	string bar = "[";
 	for (int i = 0; i < BAR_WIDTH; i++)
-		bar += i < filled ? '=' : (i == filled && percent < 100 ? '>' : ' ');
+		bar += i < filled ? '#' : '.';
 	bar += "] ";
-	if (percent < 100)
-		bar += percent < 10 ? "  " : " ";
-	bar += itos(percent) + "%";
-	cout << "\r  " << bar << flush;
+	const string pct = itos(percent);
+	bar += string(pct.size() < 3 ? 3 - pct.size() : 0, ' ') + pct + "%";
+	cout << "\r" << name << "   " << bar << flush;
 }
 
 // Reads the child's stderr to the end. Complete pieces (ended by \r or \n) and the
 // growing last piece are looked at for progress; the rest is kept as the message.
 struct progress_reader {
 	bool show;
+	string label;           // what is being downloaded (the file name)
 	int last;               // last percentage drawn, -1: none
 	string pending;
 	string message;
 
-	explicit progress_reader(bool s) : show(s), last(-1) {}
+	progress_reader(bool s, const string& l) : show(s), label(l), last(-1) {}
 
 	void note(int percent) {
 		if (percent < 0 || percent == last)
 			return;
 		last = percent;
 		if (show)
-			draw_bar(percent);
+			draw_bar(label, percent);
 	}
 
 	void feed(const char* data, size_t n) {
@@ -243,7 +251,7 @@ void fetch_url(const string& fetchcmd, const string& url, const string& dest, bo
 	}
 	close(fds[1]);
 
-	progress_reader reader(progress && isatty(STDOUT_FILENO));
+	progress_reader reader(progress && isatty(STDOUT_FILENO), url.substr(url.rfind('/') + 1));
 	char buf[1024];
 	for (;;) {
 		const ssize_t n = read(fds[0], buf, sizeof buf);
@@ -262,7 +270,7 @@ void fetch_url(const string& fetchcmd, const string& url, const string& dest, bo
 
 	if (reader.show && reader.last >= 0) {
 		if (ok)
-			draw_bar(100);
+			draw_bar(reader.label, 100);
 		cout << endl;
 	}
 

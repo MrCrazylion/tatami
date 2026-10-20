@@ -81,7 +81,7 @@ bool confirm(const context& ctx)
 		return false;
 	}
 
-	cout << "Do you want to continue? [Y/n] " << flush;
+	cout << "Proceed with this action? [Y/n]: " << flush;
 	string answer;
 	if (!getline(cin, answer))
 		return false;
@@ -149,8 +149,10 @@ vector<pkgmeta> scan_dir(const context& ctx, const string& dir, bool checksums =
 			pkgmeta meta = pkg_read_meta(path);
 			meta.filename = path;
 			meta.size = st.st_size;
-			if (checksums)
+			if (checksums) {
 				meta.checksum = file_sha256(path);
+				meta.installed_size = pkg_open(path).bytes;     // for "will require N MiB" before a download
+			}
 			string fname, fversion, farch;
 			if (!split_package_filename(path, exts, fname, fversion, farch) ||
 			    fname != meta.name || fversion != meta.version ||
@@ -406,6 +408,99 @@ void mark_requested_explicit(const context& ctx, session& s)
 	}
 }
 
+// "12.3 MiB" (one decimal; "< 0.1 MiB" for tiny amounts)
+string mib(unsigned long long bytes)
+{
+	const double m = bytes / 1048576.0;
+	if (bytes && m < 0.05)
+		return "< 0.1 MiB";
+	char buf[32];
+	snprintf(buf, sizeof buf, "%.1f MiB", m);
+	return buf;
+}
+
+// Size on disk of the installed package 'name': its regular files (links count as nothing)
+unsigned long long installed_bytes(const database& db, const string& name)
+{
+	unsigned long long total = 0;
+	const packages_t::const_iterator p = db.packages().find(name);
+	if (p == db.packages().end())
+		return 0;
+	for (set<string>::const_iterator f = p->second.files.begin(); f != p->second.files.end(); ++f) {
+		struct stat st;
+		if (lstat(db.path(*f).c_str(), &st) == 0 && S_ISREG(st.st_mode))
+			total += st.st_size;
+	}
+	return total;
+}
+
+// The FreeBSD pkg style summary shown before the question when output goes to a terminal:
+// packages grouped under headers, then counts and the space and download sizes.
+void print_summary(const session& s, const vector<plan_step>& plan)
+{
+	vector<string> added, dependencies, upgraded, downgraded, removed;
+	unsigned long long download = 0, incoming = 0, outgoing = 0;
+
+	for (size_t i = 0; i < plan.size(); i++) {
+		const plan_step& st = plan[i];
+		if (st.kind == plan_step::REMOVE) {
+			removed.push_back(st.name + ": " + st.version + (st.note.empty() ? "" : " [" + st.note + "]"));
+			outgoing += installed_bytes(s.db, st.name);
+			continue;
+		}
+		if (is_remote_url(st.filename))
+			download += st.download_size;
+		unsigned long long size = st.installed_size;
+		if (!size && !is_remote_url(st.filename) && file_exists(st.filename))
+			size = pkg_open(st.filename).bytes;     // a local file: its size is known
+		incoming += size;
+		if (st.kind == plan_step::INSTALL) {
+			// asked for by the user, or pulled in by the solver to satisfy a requirement
+			(s.res->requested_names().count(st.name) ? added : dependencies).push_back(st.name + ": " + st.version);
+		} else {
+			outgoing += installed_bytes(s.db, st.name);
+			const string text = st.name + ": " + st.old_version + " -> " + st.version;
+			if (!st.old_version.empty() && s.res->newer(st.old_version, st.version))
+				downgraded.push_back(text);
+			else
+				upgraded.push_back(text);
+		}
+	}
+
+	struct group { const char* title; const vector<string>* items; } groups[] = {
+		{ "New packages to be INSTALLED:", &added },
+		{ "Dependencies to be INSTALLED:", &dependencies },
+		{ "Packages to be UPGRADED:", &upgraded },
+		{ "Packages to be DOWNGRADED:", &downgraded },
+		{ "Packages to be REMOVED:", &removed },
+	};
+	for (size_t g = 0; g < sizeof(groups) / sizeof(groups[0]); g++) {
+		if (groups[g].items->empty())
+			continue;
+		cout << groups[g].title << endl;
+		for (size_t i = 0; i < groups[g].items->size(); i++)
+			cout << "\t" << (*groups[g].items)[i] << endl;
+		cout << endl;
+	}
+
+	if (!added.empty() || !dependencies.empty())
+		cout << "Number of packages to be installed: " << (added.size() + dependencies.size())
+		     << " (" << added.size() << " requested, " << dependencies.size() << " dependencies)" << endl;
+	if (!upgraded.empty() || !downgraded.empty())
+		cout << "Number of packages to be upgraded: " << (upgraded.size() + downgraded.size()) << endl;
+	if (!removed.empty())
+		cout << "Number of packages to be removed: " << removed.size() << endl;
+	cout << endl;
+
+	if (incoming >= outgoing)
+		cout << "The process will require " << mib(incoming - outgoing) << " more space." << endl;
+	else
+		cout << "The process will free " << mib(outgoing - incoming) << " space." << endl;
+	if (download)
+		cout << mib(download) << " to be downloaded." << endl;
+	cout << endl;
+}
+
 void run_transaction(const context& ctx, session& s, const char* verb,
 		     const vector<string>& check_names = vector<string>())
 {
@@ -466,12 +561,15 @@ void run_transaction(const context& ctx, session& s, const char* verb,
 		}
 	}
 
-	print_list("The following NEW packages will be installed:", added);
-	print_list("The following packages will be upgraded:", upgraded);
-	print_list("The following packages will be DOWNGRADED:", downgraded);
-	print_list("The following packages will be REMOVED:", removed);
-	cout << added.size() << " to install, " << (upgraded.size() + downgraded.size())
-	     << " to upgrade, " << removed.size() << " to remove." << endl;
+	const bool pretty = isatty(STDOUT_FILENO);      // the summary is for people, scripts keep the plain lists
+	if (!pretty) {
+		print_list("The following NEW packages will be installed:", added);
+		print_list("The following packages will be upgraded:", upgraded);
+		print_list("The following packages will be DOWNGRADED:", downgraded);
+		print_list("The following packages will be REMOVED:", removed);
+		cout << added.size() << " to install, " << (upgraded.size() + downgraded.size())
+		     << " to upgrade, " << removed.size() << " to remove." << endl;
+	}
 
 	// Make sure every package file is there (and is what the index says)
 	// before touching the system (read-only, so also done when simulating).
@@ -487,6 +585,9 @@ void run_transaction(const context& ctx, session& s, const char* verb,
 			throw runtime_error(st.filename + " does not contain " + st.name + " " +
 					    st.version + " (try 'tatami update')");
 	}
+
+	if (pretty)
+		print_summary(s, plan);
 
 	if (ctx.opt.simulate)
 		return;

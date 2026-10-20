@@ -191,6 +191,8 @@ Id resolver::add_solvable(Repo* repo, const pkgmeta& meta)
 		repo_set_str(repo, p, SOLVABLE_MEDIAFILE, meta.filename.c_str());
 	if (meta.size)
 		repo_set_num(repo, p, SOLVABLE_DOWNLOADSIZE, meta.size);
+	if (meta.installed_size)
+		repo_set_num(repo, p, SOLVABLE_INSTALLSIZE, meta.installed_size);
 	if (!meta.checksum.empty()) {
 		Repodata* data = repo_last_repodata(repo);
 		if (!data)
@@ -324,6 +326,7 @@ vector<pkgmeta> resolver::available_meta() const
 				m.description = summary;
 			m.filename = solvable_file(p);
 			m.size = solvable_lookup_num(s, SOLVABLE_DOWNLOADSIZE, 0);
+			m.installed_size = solvable_lookup_num(s, SOLVABLE_INSTALLSIZE, 0);
 			Id chktype = 0;
 			const char* chk = solvable_lookup_checksum(s, SOLVABLE_CHECKSUM, &chktype);
 			if (chk && chktype == REPOKEY_TYPE_SHA256)
@@ -743,6 +746,8 @@ vector<plan_step> resolver::plan() const
 			}
 
 			step.filename = solvable_file(p);
+			step.download_size = solvable_lookup_num(s, SOLVABLE_DOWNLOADSIZE, 0);
+			step.installed_size = solvable_lookup_num(s, SOLVABLE_INSTALLSIZE, 0);
 			{
 				Id chktype = 0;
 				const char* chk = solvable_lookup_checksum(pool_id2solvable(pool_, p), SOLVABLE_CHECKSUM, &chktype);

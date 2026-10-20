@@ -20,11 +20,14 @@ using namespace std;
 
 struct plan_step {
 	enum kind_t { INSTALL, UPGRADE, REMOVE } kind;
+	plan_step() : kind(INSTALL), download_size(0), installed_size(0) {}
 	string name;
 	string version;
 	string old_version;     // UPGRADE: the installed version being replaced
 	string filename;        // INSTALL/UPGRADE: package file to extract
 	string checksum;        // INSTALL/UPGRADE: SHA-256 of the file from the index (hex), if it has one
+	unsigned long long download_size;       // INSTALL/UPGRADE: size of the package file in the index (0: unknown)
+	unsigned long long installed_size;      // INSTALL/UPGRADE: its size once extracted, from the index (0: unknown)
 	string note;            // REMOVE: why ("no longer needed", "replaced by x", ...)
 };
 

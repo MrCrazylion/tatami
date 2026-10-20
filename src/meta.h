@@ -31,10 +31,11 @@ struct pkgmeta {
 	string replaces;
 	string filename;        // index only: absolute path of the package file
 	unsigned long long size;        // index only: size of the package file
+	unsigned long long installed_size;      // index only: total size of its files once extracted (0: unknown)
 	string checksum;        // index only: SHA-256 of the package file, in hex (remote packages are checked against it)
 	string reason;          // installed packages only: REASON_EXPLICIT or REASON_DEPENDENCY
 
-	pkgmeta() : size(0) {}
+	pkgmeta() : size(0), installed_size(0) {}
 };
 
 // Reads the next block of "key: value" lines (blocks are separated by blank
