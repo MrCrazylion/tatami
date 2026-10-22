@@ -2,7 +2,7 @@
 
 A small, fast package manager for Linux, built on the design of CRUX's pkgutils.
 
-- **Simple (KISS).** One binary, `tatami`, and one builder script, `tatami-mkpkg`. The package
+- **Simple (KISS).** One binary, `tatami`, and one builder, `tatami-mkpkg`, a standalone static C++ program. The package
   database, configuration, journal and hooks are plain text files. Everything works with
   no configuration at all and stays offline unless you add a remote repository.
 - **Atomic transactions.** Everything one command does is applied completely or not at
@@ -33,9 +33,11 @@ All libraries are **Git submodules** in `deps/`, pinned to release tags and buil
 static archives, so nothing is taken from your distribution's packages.
 
 To **run** it, the compiled `tatami` needs only libc and libstdc++ (`make STATIC=yes`
-produces a fully static binary). `tatami-mkpkg` additionally needs `bash`; building packages in
-its sandbox needs [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`), and
-the default download command needs `curl`.
+produces a fully static binary). `tatami-mkpkg` is always a static binary and needs no shell
+or archive tools of its own; to build packages it needs
+[bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) and a *masterdir* (see
+[Build a package](#build-a-package)), and `curl` and `md5sum` to fetch and check remote sources.
+The default download command of `tatami` needs `curl`.
 
 ### Get the sources
 
@@ -149,7 +151,7 @@ FETCHCMD = curl -f -L -# "%URL%" -o "%DEST%"
 
 ### One file per job
 
-`tatami.conf` holds the engine settings only: `FETCHCMD`, `ALLOW_UNSIGNED`, `BULKHEAD`.
+`tatami.conf` holds the engine settings only: `FETCHCMD` and `ALLOW_UNSIGNED`.
 Everything else has its own plain-text file in
 `/etc/tatami`, and every one of them may be missing:
 
@@ -261,15 +263,17 @@ it is fully offline by default.
 
 ### Build a package
 
-A package is described by a `Tatamifile`, a small bash recipe. Create an empty directory with
-this file:
+`tatami-mkpkg` is a standalone static C++ program (it replaces the former bash script). It reads a
+`Tatamifile` with a parser of its own, runs `build()` and `package()` in a
+[bubblewrap](https://github.com/containers/bubblewrap) sandbox and packs the result with libarchive.
+Create an empty directory with this file:
 
 ```bash
 # Description: A friendly greeter
 name=hello
 version=1.0
-arch=noarch
 release=1
+arch=noarch
 
 build() {
         mkdir -p $PKG/usr/bin
@@ -278,28 +282,47 @@ build() {
 }
 ```
 
-`arch` is required (use `noarch` for scripts, otherwise the target architecture such as `x86_64`).
-`build()` runs in the unpacked sources (`$SRC`) and must install everything into `$PKG`. A real
-recipe also lists `source=(...)` and `depends=(...)` and typically ends with
-`make DESTDIR=$PKG install`.
+**The Tatamifile is a small, strict subset of shell** and nothing in it runs on the host:
 
-Build it into your local repository (run it as a user who may write to that directory, or
-build into another directory and list it in `repos.conf`):
+| | |
+|---|---|
+| **mandatory** | `name`, `version`, `arch` (use `noarch` for scripts, otherwise e.g. `x86_64`; there is no fallback) and `build()` |
+| **optional** | `release`, `source=(...)` (files or URLs, fetched with `curl`, checked against `.md5sum`, unpacked with libarchive), `depends=(...)` (`"libbar >= 2.0"`, `"a \| b"`), `package()`, a `# Description:` comment |
+| **ignored** | everything else, in particular `makedepends`, `conflicts`, `replaces` and `provides`: they are skipped without being parsed and do not reach the package |
+
+Anything that is not an assignment or a function (a command, a pipe) is a syntax error that
+names the line.
+
+**Zero-host isolation.** `build()` and `package()` run under `bwrap`, whose command line is fixed in
+the program (there is no way to build on the host). The root file system is a *masterdir*, mounted
+**read-only**: a directory holding a base system (at least `/bin/sh` and a toolchain) that you
+prepare, by default `/var/lib/tatami/masterdir`. `make bootstrap-env MASTERDIR=<dir>` creates the empty
+layout. The sources are unpacked into `/build/src` (the working directory, `$SRC`) and the package
+root is `/build/pkg` (`$PKG`); the network and every other namespace are unshared and the
+environment is cleared. A build can only use what the masterdir contains.
+
+**Transactional workspace.** The host side of `/build` is `/tmp/<hash>`, 24 random lowercase letters
+and digits, created fresh with mode 0700. A C++ destructor deletes it on every way out: success,
+a failed build, an error, or SIGINT/SIGTERM/SIGHUP.
+
+Build it into your local repository (run it as a user who may write to that directory, or build into
+another directory and list it in `repos.conf`):
 
 ```sh
-tatami-mkpkg -o /var/lib/tatami/packages
+tatami-mkpkg -m /path/to/masterdir -o /var/lib/tatami/packages
 ```
 
 ```
-=======> Creating hello_1.0-1_x86_64.tar.pkg
-=======> Built /var/lib/tatami/packages/hello_1.0-1_x86_64.tar.pkg
+=======> Collecting sources
+=======> Unpacking sources
+=======> Building hello_1.0-1_noarch.tar.pkg in /tmp/k3v9x2m8q0w7e1r5t6y4u8i2
+=======> Creating hello_1.0-1_noarch.tar.pkg
+=======> Not signing (no key: run 'tatami keygen')
+=======> Built /var/lib/tatami/packages/hello_1.0-1_noarch.tar.pkg
 ```
 
-The build runs in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox: the
-system is read-only, there is no network, and only the package directory is writable. Add
-`--no-bulkhead` to build without it. To run a script when the package is installed, put
-`pre_install()` and `post_install()` functions in a file called `tatami.install` next to the
-`Tatamifile`; `tatami-mkpkg` bundles it automatically.
+To run a script when the package is installed, put `pre_install()` and `post_install()` functions in
+a file called `tatami.install` next to the `Tatamifile`; `tatami-mkpkg` bundles it automatically.
 
 ### Install
 

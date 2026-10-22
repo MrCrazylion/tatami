@@ -1,9 +1,11 @@
 #!/bin/bash
-# End-to-end tests: builds packages with tatami-mkpkg into a scratch repository and
-# drives tatami against a scratch root. Needs root (like tatami itself) and
-# is run with: make check
+# End-to-end tests: drives tatami against a scratch root and tests the standalone C++ tatami-mkpkg.
+# bwrap cannot run on every machine (it needs user namespaces), so tatami-mkpkg is tested against a
+# mock bwrap that records its arguments and runs the build in the host workspace. The fixture
+# packages of the tatami tests do not depend on tatami-mkpkg: they are packed by a small Python helper.
+# Needs root (like tatami itself) and is run with: make check
 cd "$(dirname "$0")/.." || exit 1
-export TATAMI="$PWD/tatami"   # tatami-mkpkg builds packages through the tatami binary
+export TATAMI="$PWD/tatami"   # tatami-mkpkg signs and indexes through the tatami binary
 MKPKG="$PWD/tatami-mkpkg"
 REPO_ROOT_DIR="$PWD"
 T="$PWD/tests/work"
@@ -44,6 +46,47 @@ quote_list() {
 	echo "$out"
 }
 
+# fixture_build <Tatamifile> <output-dir>: a package from an old-style recipe (with conflicts, provides, replaces),
+# built on the host and packed with Python's tarfile. This is where the tatami tests get their packages from:
+# tatami-mkpkg itself deliberately ignores conflicts, provides and replaces.
+fixture_build() {
+	local file="$1" out="$2" w rc
+	w=$(mktemp -d "$T/fix.XXXXXX") || return 1
+	(
+		unset name version release depends conflicts provides replaces arch; unset -f build
+		. "$file" || exit 1
+		mkdir -p "$w/pkg" "$out"; export SRC="$w" PKG="$w/pkg" name version release
+		( set -e; cd "$SRC"; build ) || exit 1
+		pv="$version${release:+-$release}"; pa="$arch"
+		case "$(printf '%s' "$pa" | tr 'A-Z' 'a-z')" in noarch|all|any) pa=noarch ;; esac
+		j() { local IFS=,; local o="" i; for i in "$@"; do o="${o:+$o, }$i"; done; echo "$o"; }
+		{
+			echo "name: $name"; echo "version: $pv"; echo "arch: $pa"
+			d=$(sed -n 's/^# *Description: *//p' "$file" | head -n 1); [ -n "$d" ] && echo "description: $d"
+			[ ${#depends[@]} -gt 0 ] && echo "depends: $(j "${depends[@]}")"
+			[ ${#conflicts[@]} -gt 0 ] && echo "conflicts: $(j "${conflicts[@]}")"
+			[ ${#provides[@]} -gt 0 ] && echo "provides: $(j "${provides[@]}")"
+			[ ${#replaces[@]} -gt 0 ] && echo "replaces: $(j "${replaces[@]}")"
+		} > "$w/.META"
+		[ -f "$(dirname "$file")/tatami.install" ] && cp "$(dirname "$file")/tatami.install" "$w/pkg/.INSTALL"
+		python3 - "$w/.META" "$w/pkg" "$out/${name}_${pv}_${pa}.$EXT" <<'PYPACK'
+import os, sys, tarfile
+meta, root, out = sys.argv[1:4]
+def plain(ti):
+    ti.uid = ti.gid = 0; ti.uname = ti.gname = ""
+    return ti
+with tarfile.open(out, "w:gz") as t:
+    t.add(meta, arcname=".META", filter=plain)
+    for d, dirs, files in os.walk(root):
+        dirs.sort()
+        for n in sorted(dirs + files):
+            full = os.path.join(d, n)
+            t.add(full, arcname=os.path.relpath(full, root), recursive=False, filter=plain)
+PYPACK
+	); rc=$?
+	rm -rf "$w"; return $rc
+}
+
 # mkpkg <name> <version> [key=value...]   keys: depends conflicts provides replaces files
 mkpkg() {
 	local name="$1" version="$2"; shift 2
@@ -77,14 +120,13 @@ build() {
 	echo "$name $version" > \$PKG/usr/share/$name/version$body
 }
 RECIPE
-	"$MKPKG" -c "$CONF" -f "$dir/Tatamifile" -o "$REPO" > "$T/tatami-mkpkg.log" 2>&1 || { bad "tatami-mkpkg $name $version" "$(cat "$T/tatami-mkpkg.log")"; return 1; }
+	fixture_build "$dir/Tatamifile" "$REPO" > "$T/tatami-mkpkg.log" 2>&1 || { bad "fixture package $name $version" "$(cat "$T/tatami-mkpkg.log")"; return 1; }
 }
 
 rm -rf "$T"
 mkdir -p "$T/home"; export HOME="$T/home"      # tatami-mkpkg looks for a signing key in ~/.tatami
 mkdir -p "$ROOT/etc" "$REPO" "$T/recipes"
 cat > "$CONF" <<CONFIG
-BULKHEAD = no
 CONFIG
 # the file rules and the held packages live in the root's etc/tatami, not in tatami.conf
 set_rules() { mkdir -p "$1/etc/tatami"; printf 'UPGRADE ^etc/.*$ NO\n' > "$1/etc/tatami/upgrade.rules"; }
@@ -93,6 +135,31 @@ set_rules "$ROOT"
 set_repos() { local root="$1" i=0; shift; mkdir -p "$root/etc/tatami"; : > "$root/etc/tatami/repos.conf"
 	for d in "$@"; do i=$((i+1)); echo "repo$i = $d" >> "$root/etc/tatami/repos.conf"; done; }
 set_repos "$ROOT" "$REPO"
+# a stand-in for bwrap: logs its arguments ($MOCK_LOG), then runs the command in the host workspace, with
+# /build mapped to it. MOCK_EXIT makes it fail without running anything, MOCK_SLEEP makes it wait first.
+MOCKB="$T/mockbwrap"; mkdir -p "$MOCKB"
+cat > "$MOCKB/bwrap" <<'MOCKEOF'
+#!/bin/bash
+[ -n "$MOCK_LOG" ] && printf '%s\n' "$@" > "$MOCK_LOG"
+ws=""; chdir=""; envl=()
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+	case "$1" in
+	--bind) [ "$3" = /build ] && ws="$2"; shift 2 ;;
+	--chdir) chdir="$2"; shift ;;
+	--setenv) envl+=("$2=${3//\/build/$ws}"); shift 2 ;;
+	esac
+	shift
+done
+shift
+[ -n "$MOCK_SLEEP" ] && sleep "$MOCK_SLEEP"
+[ -n "$MOCK_EXIT" ] && exit "$MOCK_EXIT"
+cd "$ws/${chdir#/build/}" || exit 97
+exec env -i "${envl[@]}" PATH=/usr/bin:/bin "$@"
+MOCKEOF
+chmod +x "$MOCKB/bwrap"
+MASTER="$T/master"; mkdir -p "$MASTER"
+# tatami-mkpkg through the mock sandbox: mk [options]
+mk() { PATH="$MOCKB:$PATH" TATAMI="$TATAMI" "$MKPKG" -m "$MASTER" "$@"; }
 # the server side of a repository: the index of a directory is written by 'tatami update', which
 # indexes a local repository; this is what tatami-mkpkg does for its output directory. (No 'tatami index'.)
 publish_index() {
@@ -294,157 +361,208 @@ absent "nothing installed after declining" usr/bin/extra
 check "non-interactive without -y is refused" 1 t install extra
 absent "still not installed" usr/bin/extra
 
-echo "# tatami-mkpkg"
-mkdir -p "$T/recipes/failing"
-cat > "$T/recipes/failing/Tatamifile" <<RECIPE
-name=failing
-version=1
+echo "# tatami-mkpkg: a standalone static binary; the build runs in a bwrap sandbox (mocked here)"
+ldd "$MKPKG" 2>&1 | grep -q 'not a dynamic' && ok "tatami-mkpkg is a statically linked binary" || bad "tatami-mkpkg is dynamically linked" "$(ldd "$MKPKG" 2>&1)"
+head -c 4 "$MKPKG" | grep -q 'ELF' && ok "and a compiled program, not a script" || bad "tatami-mkpkg is not an ELF binary"
+leftovers() { ls /tmp | grep -Ec '^[a-z0-9]{16,32}$'; }
+SB="$T/sb"; rm -rf "$SB"; mkdir -p "$SB/r" "$SB/out" "$SB/srv"
+LEFT=$(leftovers)
+cat > "$SB/r/Tatamifile" <<RECIPE
+# Description: Sandbox test
+name=sbox
+version=1.0
+release=2
 arch=$HARCH
+depends=(glibc "libfoo >= 2.0" "a | b")
 build() {
-	mkdir -p \$PKG/usr/bin
-	false
-	echo late > \$PKG/usr/bin/failing
+	echo "\$PWD \$(basename \$SRC) \$(basename \$PKG) \$name \$version \$release" > \$PKG/env
+	ls "\$SRC" > \$PKG/srclist
 }
+package() { echo packaged >> \$PKG/env; }
 RECIPE
-check "a failing command in build() fails the build" 1 "$MKPKG" -c "$CONF" -f "$T/recipes/failing/Tatamifile" -o "$T/failout"
-[ ! -e "$T/failout/failing_1_$HARCH.$EXT" ] && ok "no package produced by failing build" || bad "package produced by failing build"
-mkdir -p "$T/recipes/commas"
-printf 'name=commas\nversion=1\narch='$HARCH'\ndepends=("a, b")\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/commas/Tatamifile"
-check "relation containing a comma is refused" 1 "$MKPKG" -c "$CONF" -f "$T/recipes/commas/Tatamifile" -o "$T/failout"
-mkdir -p "$T/recipes/dash"
-printf 'name=dash\nversion=1\narch='$HARCH'\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/-rf; }\n' > "$T/recipes/dash/Tatamifile"
-check "file names starting with a dash are packaged" 0 "$MKPKG" -c "$CONF" -f "$T/recipes/dash/Tatamifile" -o "$T/failout"
-check "dash file is in the package" 0 tar -tf "$T/failout/dash_1_$HARCH.$EXT"
-has "listed" "x/-rf"
+NM="sbox_1.0-2_$HARCH.$EXT"
+export MOCK_LOG="$SB/args"
+check "a build through the (mock) sandbox succeeds" 0 mk -f "$SB/r/Tatamifile" -o "$SB/out"
+unset MOCK_LOG
+[ -f "$SB/out/$NM" ] && ok "and makes $NM" || bad "no package" "$(ls "$SB/out")"
+ENVF=$(tar -xOf "$SB/out/$NM" env 2>/dev/null)
+echo "$ENVF" | head -1 | grep -Eq '^/tmp/[a-z0-9]{24}/src src pkg sbox 1.0 2$' && ok "build() ran in <workspace>/src with SRC=.../src, PKG=.../pkg and name, version, release set" || bad "environment of build()" "$ENVF"
+echo "$ENVF" | grep -qx packaged && ok "package() ran after build()" || bad "package() did not run"
+[ -z "$(tar -xOf "$SB/out/$NM" srclist 2>/dev/null)" ] && ok "the source directory was empty (src and pkg are separate directories)" || bad "src not empty" "$(tar -xOf "$SB/out/$NM" srclist)"
+tar -tf "$SB/out/$NM" | head -1 | grep -qx '\.META' && ok ".META is the first member" || bad ".META not first" "$(tar -tf "$SB/out/$NM" | head -3)"
+ARGS=$(sed '/^--$/q' "$SB/args" | paste -sd' ' -)
+for a in --unshare-all --die-with-parent --new-session --clearenv; do echo " $ARGS " | grep -q -- " $a " && ok "bwrap gets $a" || bad "bwrap lacks $a" "$ARGS"; done
+echo "$ARGS" | grep -qF -- "--ro-bind $MASTER / --dev /dev --proc /proc --tmpfs /tmp" && ok "the masterdir is the root, bound read-only; /dev, /proc and a tmpfs /tmp follow" || bad "root and API file systems" "$ARGS"
+echo "$ARGS" | grep -Eq -- "--bind /tmp/[a-z0-9]{24} /build --chdir /build/src" && ok "the workspace /tmp/<24 lowercase letters and digits> is bound read-write at /build, and the directory is /build/src" || bad "workspace bind" "$ARGS"
+for kv in "SRC /build/src" "PKG /build/pkg" "name sbox" "version 1.0" "release 2"; do echo "$ARGS" | grep -qF -- "--setenv $kv" && ok "--setenv $kv" || bad "no --setenv $kv" "$ARGS"; done
+sed -n '/^--$/,$p' "$SB/args" | sed -n '2,3p' | paste -sd' ' - | grep -qx '/bin/sh -c' && ok "the build script is run by /bin/sh -c" || bad "command" "$(sed -n '/^--$/,$p' "$SB/args" | head -4)"
+WS=$(echo "$ARGS" | grep -Eo '/tmp/[a-z0-9]{24}' | head -1)
+[ -n "$WS" ] && [ ! -e "$WS" ] && ok "the workspace $WS is deleted after a successful build" || bad "workspace left behind" "$WS"
+[ "$(leftovers)" = "$LEFT" ] && ok "no directory is left in /tmp" || bad "leftovers in /tmp"
+for d in dev proc tmp build; do [ -d "$MASTER/$d" ] || bad "mount point $d missing in the masterdir"; done; ok "the mount points exist in the (read-only) masterdir"
+tar -xOf "$SB/out/$NM" .META | grep -qx 'depends: glibc, libfoo >= 2.0, a | b' && ok ".META: depends keep their version conditions and alternatives" || bad "depends in .META" "$(tar -xOf "$SB/out/$NM" .META)"
+tar -xOf "$SB/out/$NM" .META | grep -qx 'description: Sandbox test' && ok ".META: the description comes from '# Description:'" || bad "description"
+tar -xOf "$SB/out/$NM" .META | grep -qx "version: 1.0-2" && ok ".META: version is <version>-<release>" || bad "version in .META"
+check "tatami reads the package" 0 "$TATAMI" -c "$CONF" files "$SB/out/$NM"
 
-echo "# bulkhead (bwrap is mocked: this host cannot create user namespaces)"
-MOCK="$T/mockbin"; DEST="$T/destdir"; mkdir -p "$MOCK" "$DEST"
-cat > "$MOCK/bwrap" <<'MOCKEOF'
-#!/bin/bash
-# Mock bubblewrap: verifies the complete argument vector, then behaves as told.
-printf '%s\n' "$@" > "$MOCK_LOG"
-args=("$@")
-fail() { echo "mock bwrap: $1" >&2; exit 97; }
-expect() { # expect <index> <value...>: consecutive arguments from <index>
-	local i=$1; shift
-	for v in "$@"; do
-		[ "${args[$i]}" = "$v" ] || fail "argument $i is '${args[$i]}', expected '$v'"
-		i=$((i+1))
-	done
-}
-# system read-only, own /dev and /proc, empty /tmp, /home and /root
-expect 0 --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /home --tmpfs /root
-i=13
-# optional read-only re-exposed host paths, only valid after the tmpfs mounts
-while [ "${args[$i]}" = --ro-bind ]; do
-	[ "${args[$((i+1))]}" = "${args[$((i+2))]}" ] || fail "--ro-bind of '${args[$((i+1))]}' to a different path"
-	i=$((i+3))
+# failing builds leave nothing behind
+printf 'name=failing\nversion=1\narch=%s\nbuild() {\n\tmkdir -p $PKG/usr/bin\n\tfalse\n\techo late > $PKG/usr/bin/failing\n}\n' "$HARCH" > "$SB/r/Failing"
+check "a failing command in build() fails the build" 1 mk -f "$SB/r/Failing" -o "$SB/out"
+has "with the old message" "ERROR: building failing failed"
+[ ! -e "$SB/out/failing_1_$HARCH.$EXT" ] && ok "no package produced by failing build" || bad "package produced by failing build"
+[ "$(leftovers)" = "$LEFT" ] && ok "and the workspace is gone" || bad "workspace left after a failed build"
+printf 'name=nothing\nversion=1\narch=%s\nbuild() { :; }\n' "$HARCH" > "$SB/r/Nothing"
+check "a build that installs nothing into \$PKG fails" 1 mk -f "$SB/r/Nothing" -o "$SB/out"
+has "with a message" 'installed nothing into \$PKG'
+OUT=$(MOCK_EXIT=7 mk -f "$SB/r/Tatamifile" -o "$SB/out2" 2>&1); rc=$?
+[ $rc -ne 0 ] && [ ! -e "$SB/out2/$NM" ] && [ "$(leftovers)" = "$LEFT" ] && ok "a sandbox that exits with an error fails the build and the workspace is deleted" || bad "bwrap failure" "$OUT"
+OUT=$(PATH="$T/nobin:/nonexistent" TATAMI="$TATAMI" "$MKPKG" -m "$MASTER" -f "$SB/r/Tatamifile" -o "$SB/out2" 2>&1); rc=$?
+[ $rc -ne 0 ] && echo "$OUT" | grep -q "cannot run bwrap" && echo "$OUT" | grep -q "bubblewrap" && ok "without bwrap: a clear error that names bubblewrap" || bad "missing bwrap" "$OUT"
+[ "$(leftovers)" = "$LEFT" ] && ok "and nothing is left in /tmp" || bad "workspace left without bwrap"
+OUT=$(mk -m "$SB/no-masterdir" -f "$SB/r/Tatamifile" -o "$SB/out2" 2>&1); rc=$?
+[ $rc -ne 0 ] && echo "$OUT" | grep -q "masterdir .* does not exist" && ok "a missing masterdir is an error" || bad "missing masterdir" "$OUT"
+# an interrupt: forwarded to the sandbox, then the workspace is deleted all the same
+PATH="$MOCKB:$PATH" TATAMI="$TATAMI" MOCK_SLEEP=5 "$MKPKG" -m "$MASTER" -f "$SB/r/Tatamifile" -o "$SB/out2" > "$SB/intr.log" 2>&1 &
+BGP=$!; sleep 1
+kill -TERM "$BGP"; wait "$BGP"; rc=$?
+[ $rc -ne 0 ] && grep -q "interrupted by signal" "$SB/intr.log" && ok "SIGTERM during the build stops it with 'interrupted'" || bad "interrupt (rc $rc)" "$(cat "$SB/intr.log")"
+[ "$(leftovers)" = "$LEFT" ] && ok "and the workspace is deleted" || bad "workspace left after an interrupt"
+
+echo "# tatami-mkpkg: options"
+for o in "-c $CONF" --no-bulkhead --no-sandbox --bulkhead -k --keep-work; do
+	OUT=$(mk $o -f "$SB/r/Tatamifile" -o "$SB/out2" 2>&1); rc=$?
+	[ $rc -ne 0 ] && echo "$OUT" | grep -q "invalid option" && ok "${o%% *}: the option of the former script is gone" || bad "${o%% *} was accepted" "$OUT"
 done
-nro=$(( (i-13)/3 ))
-expect $i --bind; DESTIDX=$((i+1))
-[ -n "$MOCK_ANY_DEST" ] || expect $DESTIDX "$MOCK_DEST"
-expect $((i+2)) /tmp/destdir --unshare-net --unshare-pid --die-with-parent --
-rest=("${args[@]:$((i+7))}")
-[ -n "$MOCK_EXIT" ] && exit "$MOCK_EXIT"
-[ -n "$MOCK_KILL" ] && kill -"$MOCK_KILL" $$
-if [ -n "$MOCK_EMULATE" ]; then
-	# crude stand-in for the mounts, only used when explicitly requested
-	ln -sfn "${args[$DESTIDX]}" /tmp/destdir; mkdir -p /tmp/build
-	trap 'rm -f /tmp/destdir; rm -rf /tmp/build' EXIT
-	"${rest[@]}"; exit $?
-fi
-exec "${rest[@]}"
-MOCKEOF
-chmod +x "$MOCK/bwrap"
-export MOCK_LOG="$T/bwrap.args" MOCK_DEST="$DEST"
-bh() { PATH="$MOCK:$PATH" "$TATAMI" bulkhead "$@"; }
+check "-h prints the usage" 0 "$MKPKG" -h
+has "it names the masterdir option" "--masterdir"
+has "and the signing key" "TATAMI_PRIVKEY"
+check "-v prints the version" 0 "$MKPKG" -v
+has "tatami-mkpkg and a version" "^tatami-mkpkg [0-9]"
+check "an option without its argument is an error" 1 "$MKPKG" -f
+check "a missing recipe is an error" 1 mk -f "$SB/r/NoSuchFile"
+has "which says so" "not found"
 
-check "mock bwrap accepts the exact argument vector and succeeds" 0 bh "$DEST" -- echo hello
-has "the sandboxed command ran" "^hello$"
-check "log: ro-bind of the root" 0 grep -qx -- --ro-bind "$MOCK_LOG"
-check "log: network unshared" 0 grep -qx -- --unshare-net "$MOCK_LOG"
-check "log: pid namespace" 0 grep -qx -- --unshare-pid "$MOCK_LOG"
-check "log: dies with parent" 0 grep -qx -- --die-with-parent "$MOCK_LOG"
-check "log: destdir mapped to /tmp/destdir" 0 grep -qx -- /tmp/destdir "$MOCK_LOG"
-check "log: no separate /build tmpfs" 1 grep -qx -- /build "$MOCK_LOG"
-check "log: own /proc (host processes hidden)" 0 grep -qx -- --proc "$MOCK_LOG"
-check "log: /home is an empty tmpfs" 0 bash -c "grep -x -A1 -- --tmpfs '$MOCK_LOG' | grep -qx /home"
-check "log: /root is an empty tmpfs" 0 bash -c "grep -x -A1 -- --tmpfs '$MOCK_LOG' | grep -qx /root"
-check "log: command follows --" 0 bash -c "tail -n 2 '$MOCK_LOG' | tr '\n' ' ' | grep -q 'echo hello'"
-mkdir -p "$T/rodir"; echo recipe > "$T/rodir/Tatamifile"
-check "--ro paths are accepted and passed as read-only binds" 0 bh --ro "$T/rodir/Tatamifile" --ro "$T/rodir" "$DEST" -- true
-check "log: each --ro path is bound to itself (source and target)" 0 bash -c "[ \$(grep -Fxc '$T/rodir/Tatamifile' '$MOCK_LOG') = 2 ] && [ \$(grep -Fxc '$T/rodir' '$MOCK_LOG') = 2 ]"
-check "log: --ro binds come after the /home tmpfs" 0 bash -c "tail -n +1 '$MOCK_LOG' | grep -nx -e /home -e '$T/rodir/Tatamifile' | head -2 | cut -d: -f2 | tr '\n' ' ' | grep -qx '/home $T/rodir/Tatamifile '"
-"$TATAMI" bulkhead --ro "$T/no-such-path" "$DEST" -- true >/dev/null 2>&1; [ $? -eq 2 ] && ok "--ro with a missing path is a usage error (2)" || bad "missing --ro path"
-"$TATAMI" bulkhead --ro >/dev/null 2>&1; [ $? -eq 2 ] && ok "--ro without a value is a usage error (2)" || bad "--ro without value"
-check "command arguments pass through unchanged" 0 bh "$DEST" -- bash -c 'echo "a b" "$1"' x 'c d'
-has "arguments with spaces intact" "^a b c d$"
-MOCK_EXIT=0 bh "$DEST" -- true >/dev/null 2>&1; [ $? -eq 0 ] && ok "mock exiting 0 gives 0" || bad "mock exit 0"
-MOCK_EXIT=42 bh "$DEST" -- true >/dev/null 2>&1; rc=$?
-[ $rc -eq 42 ] && ok "mock exiting 42 gives exactly 42" || bad "mock exit 42 (got $rc)"
-OUT=$(MOCK_KILL=TERM bh "$DEST" -- true 2>&1); rc=$?
-[ $rc -eq 143 ] && ok "death by SIGTERM gives 128+15" || bad "signal exit code (got $rc)" "$OUT"
-echo "$OUT" | grep -q "terminated by signal 15" && ok "terminating signal is reported" || bad "signal message" "$OUT"
-OUT=$(PATH=/nonexistent "$TATAMI" bulkhead "$DEST" -- true 2>&1); rc=$?
-[ $rc -eq 255 ] && ok "bwrap not found gives 255" || bad "missing bwrap (got $rc)" "$OUT"
-echo "$OUT" | grep -q "could not run bwrap" && ok "launch failure message" || bad "launch message" "$OUT"
-printf '#!/bin/sh\n' > "$T/notexec"; mkdir -p "$T/badbin"; cp "$T/notexec" "$T/badbin/bwrap"
-OUT=$(PATH="$T/badbin" "$TATAMI" bulkhead "$DEST" -- true 2>&1); rc=$?
-[ $rc -eq 255 ] && ok "non-executable bwrap gives 255" || bad "non-executable bwrap (got $rc)" "$OUT"
-"$TATAMI" bulkhead "$DEST" true >/dev/null 2>&1; [ $? -eq 2 ] && ok "missing -- is a usage error (2)" || bad "usage error"
-"$TATAMI" bulkhead "$DEST" -- >/dev/null 2>&1; [ $? -eq 2 ] && ok "missing command is a usage error (2)" || bad "usage error 2"
-OUT=$(bh "$T/no-such-dir" -- true 2>&1); rc=$?
-[ $rc -eq 2 ] && ok "missing destdir is a usage error (2)" || bad "missing destdir (got $rc)" "$OUT"
+echo "# tatami-mkpkg: the Tatamifile"
+rb() { printf '%b' "$1" > "$SB/r/Bad"; OUT=$(mk -f "$SB/r/Bad" -o "$SB/out3" 2>&1); rc=$?; }
+GOOD='build() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n'
+rb "name=x\nversion=1\narch=$HARCH\n$GOOD"
+[ $rc -eq 0 ] && [ -f "$SB/out3/x_1_$HARCH.$EXT" ] && ok "release is optional: the package is <name>_<version>_<arch>" || bad "recipe without release" "$OUT $(ls "$SB/out3")"
+rb "name=x\nversion=1\nrelease=3\narch=$HARCH\nmakedepends=(gcc 'bad, entry' \"a b\")\nconflicts=(\"old < 2\")\nreplaces=(older)\nprovides=(x-api)\nanything=\"goes here\"\n$GOOD"
+[ $rc -eq 0 ] && ok "makedepends, conflicts, replaces, provides and other fields are ignored, not parsed" || bad "ignored fields were not ignored" "$OUT"
+M3=$(tar -xOf "$SB/out3/x_1-3_$HARCH.$EXT" .META 2>/dev/null)
+echo "$M3" | grep -Eq '^(conflicts|replaces|provides|makedepends):' && bad ".META has an ignored field" "$M3" || ok "and none of them reaches .META"
+rb "name=x\nversion=1\n$GOOD"
+[ $rc -ne 0 ] && [ "$OUT" = "Error: arch is not defined in Tatamifile" ] && ok "arch is required: exactly 'Error: arch is not defined in Tatamifile'" || bad "recipe without arch" "$OUT"
+rb "name=x\nversion=1\narch=\n$GOOD"
+[ $rc -ne 0 ] && [ "$OUT" = "Error: arch is not defined in Tatamifile" ] && ok "an empty arch= is the same error" || bad "empty arch" "$OUT"
+rb "version=1\narch=$HARCH\n$GOOD"; [ $rc -ne 0 ] && echo "$OUT" | grep -q "does not set 'name'" && ok "name is required" || bad "no name" "$OUT"
+rb "name=x\narch=$HARCH\n$GOOD"; [ $rc -ne 0 ] && echo "$OUT" | grep -q "does not set 'version'" && ok "version is required" || bad "no version" "$OUT"
+rb "name=x\nversion=1\narch=$HARCH\n"; [ $rc -ne 0 ] && echo "$OUT" | grep -q "does not define build()" && ok "build() is required" || bad "no build()" "$OUT"
+rb "name=x\nversion=1\narch=$HARCH\nbuild() { mkdir -p \$PKG/x; echo x > \$PKG/x/f; }\npackage() { echo p > \$PKG/x/p; }\n"
+[ $rc -eq 0 ] && tar -tf "$SB/out3/x_1_$HARCH.$EXT" | grep -qx 'x/p' && ok "package() is optional, and runs when present" || bad "package()" "$OUT"
+rb "name=x\nversion=1\narch=$HARCH\ndepends=(\"a, b\")\n$GOOD"; [ $rc -ne 0 ] && echo "$OUT" | grep -q "must not contain a comma" && ok "a relation containing a comma is refused" || bad "comma in depends" "$OUT"
+rb "name=x\nversion=1\narch=$HARCH\nrm -rf /\n$GOOD"; [ $rc -ne 0 ] && echo "$OUT" | grep -q "line 4: unsupported statement 'rm'" && ok "a command in the recipe is a syntax error with its line: nothing runs on the host" || bad "command in the recipe" "$OUT"
+rb "name=x\nversion=1\narch=$HARCH\nbuild() { echo hi\n"; [ $rc -ne 0 ] && echo "$OUT" | grep -q "missing '}'" && ok "an unclosed function body is a syntax error" || bad "unclosed body" "$OUT"
+rb "name=x\nversion=1\narch=$HARCH\nsource=(\$nope)\n$GOOD"; [ $rc -ne 0 ] && echo "$OUT" | grep -q 'variable \$nope is not set' && ok "an unset variable is an error" || bad "unset variable" "$OUT"
+rb "name=x\nversion=1\narch=$HARCH\ndepends=(a \"b\n$GOOD"; [ $rc -ne 0 ] && echo "$OUT" | grep -q "unterminated quote" && ok "an unterminated quote is an error" || bad "unterminated quote" "$OUT"
+rb "name=under_score\nversion=1\narch=$HARCH\n$GOOD"; [ $rc -ne 0 ] && echo "$OUT" | grep -q "only contain letters, digits" && ok "'_' in a package name is refused (it separates name and version in file names)" || bad "underscore in name" "$OUT"
+rb "name=-x\nversion=1\narch=$HARCH\n$GOOD"; [ $rc -ne 0 ] && echo "$OUT" | grep -q "must start with a letter or digit" && ok "a name must start with a letter or digit" || bad "name starting with a dash" "$OUT"
+rb "# a comment\nname=multi   # trailing comment\nversion='1.0'\narch=\"$HARCH\"\ndepends=(\n\t# one per line\n\tfoo\n\t'bar >= 1'\n)\nbuild() {\n\tmkdir -p \$PKG/x\n\techo '}' > \$PKG/x/brace   # } in a comment and in quotes\n}\n"
+[ $rc -eq 0 ] && tar -xOf "$SB/out3/multi_1.0_$HARCH.$EXT" .META | grep -qx 'depends: foo, bar >= 1' && ok "comments, quotes, multi-line arrays and braces inside quotes and comments are understood" || bad "parser details" "$OUT"
+for a in noarch ANY All NoArch; do
+	rb "name=na$(echo $a | tr 'A-Z' 'a-z')\nversion=1\narch=$a\n$GOOD"
+	[ -f "$SB/out3/na$(echo $a | tr 'A-Z' 'a-z')_1_noarch.$EXT" ] && ok "arch=$a is written noarch" || bad "arch=$a" "$OUT $(ls "$SB/out3")"
+done
+rb "name=x86\nversion=2.5\nrelease=1\narch=x86_64\n$GOOD"
+[ -f "$SB/out3/x86_2.5-1_x86_64.$EXT" ] && ok "an underscore in the architecture does not confuse the name: x86_2.5-1_x86_64.$EXT" || bad "x86_64 name" "$OUT $(ls "$SB/out3")"
+check "tatami parses these names back without a warning" 0 bash -c "mkdir -p '$SB/ext-root/etc/tatami'; echo 'p = $SB/out3' > '$SB/ext-root/etc/tatami/repos.conf'; '$TATAMI' -r '$SB/ext-root' update"
+hasnt "no naming warning" "named differently"
 
-echo "# tatami-mkpkg with bulkhead"
-CONF_BULK="$T/tatami-bulk.conf"; grep -v '^BULKHEAD' "$CONF" > "$CONF_BULK"
-mkdir -p "$T/recipes/boxed"
-cat > "$T/recipes/boxed/Tatamifile" <<'RECIPE'
-name=boxed
-version=1
-arch=$(uname -m)
-helper() { echo "from helper"; }
+echo "# tatami-mkpkg: sources"
+if command -v curl >/dev/null && command -v md5sum >/dev/null; then
+	mkdir -p "$SB/src/demo-1.0/pkg" "$SB/srvdir" "$SB/rs"
+	echo hello > "$SB/src/demo-1.0/hello.txt"; echo inner > "$SB/src/demo-1.0/pkg/inner.txt"
+	( cd "$SB/src" && tar czf "$SB/srvdir/demo-1.0.tar.gz" demo-1.0 )
+	echo patch > "$SB/rs/fix.patch"
+	cat > "$SB/rs/Tatamifile" <<RECIPE
+name=demo
+version=1.0
+arch=$HARCH
+source=(file://$SB/srvdir/\$name-\$version.tar.gz fix.patch)
 build() {
-	mkdir -p $PKG/usr/share/boxed
-	echo "$PKG $DESTDIR $(helper) $(pwd)" > $PKG/usr/share/boxed/env
+	cd demo-1.0
+	mkdir -p \$PKG/usr/share/demo
+	cp hello.txt pkg/inner.txt ../fix.patch \$PKG/usr/share/demo/
 }
 RECIPE
-bk() { TATAMI="$TATAMI" "$MKPKG" -c "$CONF_BULK" -f "$T/recipes/boxed/Tatamifile" -o "$T/boxout" "$@"; }
-
-check "isolated build refuses to run without bwrap" 1 bk
-has "error names bwrap" "require bwrap"
-has "error names the opt-out" "no-bulkhead"
-[ ! -e "$T/boxout/boxed_1_$HARCH.$EXT" ] && ok "no package without bwrap" || bad "package built without bwrap"
-check "--no-bulkhead builds without bwrap" 0 bk --no-bulkhead
-check "--no-sandbox is an alias" 0 bk --no-sandbox
-rm -rf "$T/boxout"
-echo "BULKHEAD = no" >> "$CONF_BULK"
-check "BULKHEAD = no in the config builds without bwrap" 0 bk
-sed -i '/^BULKHEAD/d' "$CONF_BULK"; rm -rf "$T/boxout"
-check "--bulkhead overrides BULKHEAD = no" 1 bash -c "echo 'BULKHEAD = no' >> '$CONF_BULK'; TATAMI='$TATAMI' '$MKPKG' -c '$CONF_BULK' -f '$T/recipes/boxed/Tatamifile' -o '$T/boxout' --bulkhead"
-sed -i '/^BULKHEAD/d' "$CONF_BULK"
-echo "BULKHEAD = maybe" >> "$CONF_BULK"
-check "invalid BULKHEAD value is refused by tatami-mkpkg" 1 bk
-check "invalid BULKHEAD value is refused by tatami" 1 "$TATAMI" -c "$CONF_BULK" list
-sed -i '/^BULKHEAD/d' "$CONF_BULK"
-
-if [ "$(id -u)" = 0 ] && [ ! -e /tmp/build ] && [ ! -e /tmp/destdir ]; then
-	export MOCK_EMULATE=1 MOCK_ANY_DEST=1
-	rm -rf "$T/boxout"
-	OUT=$(PATH="$MOCK:$PATH" bk 2>&1); rc=$?
-	[ $rc -eq 0 ] && ok "build through the (mock) sandbox succeeds" || bad "sandboxed build (rc $rc)" "$OUT"
-	tar -xOf "$T/boxout/boxed_1_$HARCH.$EXT" usr/share/boxed/env 2>/dev/null | grep -qx "/tmp/destdir /tmp/destdir from helper /tmp/build/src" \
-		&& ok "inside: PKG and DESTDIR are /tmp/destdir, recipe functions work, cwd is /tmp/build/src" \
-		|| bad "environment inside the sandbox" "$(tar -xOf "$T/boxout/boxed_1_$HARCH.$EXT" usr/share/boxed/env 2>&1)"
-	mkdir -p "$T/recipes/boxfail"
-	printf 'name=boxfail\nversion=1\narch='$HARCH'\nbuild() { mkdir -p $PKG/x; false; echo hi > $PKG/x/f; }\n' > "$T/recipes/boxfail/Tatamifile"
-	OUT=$(PATH="$MOCK:$PATH" TATAMI="$TATAMI" "$MKPKG" -c "$CONF_BULK" -f "$T/recipes/boxfail/Tatamifile" -o "$T/boxout" 2>&1); rc=$?
-	[ $rc -ne 0 ] && [ ! -e "$T/boxout/boxfail_1_$HARCH.$EXT" ] && ok "failing build inside the sandbox fails tatami-mkpkg" || bad "failing sandboxed build" "$OUT"
-	unset MOCK_EMULATE MOCK_ANY_DEST
+	( cd "$SB/rs" && md5sum fix.patch > .md5sum; md5sum "$SB/srvdir/demo-1.0.tar.gz" | sed 's|  .*|  demo-1.0.tar.gz|' >> .md5sum )
+	check "a remote source is fetched, checked and unpacked; a local one is copied" 0 mk -f "$SB/rs/Tatamifile" -o "$SB/out4"
+	has "downloaded" "Downloading file://"
+	has "checksums verified" "Checking md5sum"
+	[ -f "$SB/rs/demo-1.0.tar.gz" ] && ok "the download is kept next to the recipe" || bad "no download cache"
+	DP="$SB/out4/demo_1.0_$HARCH.$EXT"
+	tar -tf "$DP" | grep -qx 'usr/share/demo/hello.txt' && tar -tf "$DP" | grep -qx 'usr/share/demo/inner.txt' && tar -tf "$DP" | grep -qx 'usr/share/demo/fix.patch' && ok "the unpacked tarball (including its own top-level pkg/ directory) and the patch are in /build/src, apart from \$PKG" || bad "sources" "$(tar -tf "$DP")"
+	tar -tf "$DP" | grep -c 'inner.txt' | grep -qx 1 && ok "the tarball's pkg/ directory did not clash with the package root" || bad "layout clash"
+	rm -f "$SB/srvdir/demo-1.0.tar.gz"
+	check "an already downloaded source is not fetched again" 0 mk -f "$SB/rs/Tatamifile" -o "$SB/out4"
+	hasnt "no second download" "Downloading"
+	echo tampered >> "$SB/rs/demo-1.0.tar.gz"
+	check "a source that does not match .md5sum fails the build" 1 mk -f "$SB/rs/Tatamifile" -o "$SB/out5"
+	has "md5sum says so" "md5sum verification failed"
+	[ ! -e "$SB/out5/demo_1.0_$HARCH.$EXT" ] && [ "$(leftovers)" = "$LEFT" ] && ok "no package, no workspace" || bad "left after a checksum failure"
+	rm -f "$SB/rs/.md5sum"
+	printf 'name=nosrc\nversion=1\narch=%s\nsource=(missing.tar.gz)\nbuild() { :; }\n' "$HARCH" > "$SB/rs/Missing"
+	check "a missing local source is an error" 1 mk -f "$SB/rs/Missing" -o "$SB/out5"
+	has "naming it" "source 'missing.tar.gz' not found"
+	printf 'name=nodl\nversion=1\narch=%s\nsource=(file://%s/nothing-here.tar.gz)\nbuild() { :; }\n' "$HARCH" "$SB/srvdir" > "$SB/rs/Nodl"
+	check "a download that fails is an error" 1 mk -f "$SB/rs/Nodl" -o "$SB/out5"
+	has "naming the URL" "download of file://.*nothing-here.tar.gz failed"
+	[ ! -e "$SB/rs/nothing-here.tar.gz.part" ] && ok "and leaves no partial file" || bad "partial download left"
+	mkdir -p "$SB/evil" && ( cd "$SB/evil" && mkdir d && echo x > d/f && tar cf "$SB/rs/evil.tar" --transform 's|^d/|../../escape-|' d/f 2>/dev/null )
+	printf 'name=evil\nversion=1\narch=%s\nsource=(evil.tar)\nbuild() { mkdir -p $PKG/a; echo > $PKG/a/f; }\n' "$HARCH" > "$SB/rs/Evil"
+	check "a tarball with a path that leaves the source directory is refused" 1 mk -f "$SB/rs/Evil" -o "$SB/out5"
+	has "naming the path" "unsafe path"
+	[ ! -e /tmp/escape-f ] && [ "$(leftovers)" = "$LEFT" ] && ok "and nothing was written outside the workspace" || bad "tarball escaped"
 else
-	echo "skip - sandboxed tatami-mkpkg build (needs root and no /tmp/build or /tmp/destdir on this host)"
+	echo "skip - sources (needs curl and md5sum)"
 fi
-unset MOCK_LOG MOCK_DEST
+
+echo "# tatami-mkpkg: .INSTALL, signing and the index"
+SGK="$SB/sk"; mkdir -p "$SGK"; HOME="$SGK/home" "$TATAMI" keygen >/dev/null 2>&1
+SIGNED() { ( cd "$SB" && HOME="$SGK/home" mk "$@" ); }
+mkdir -p "$SB/srepo"
+check "with a key in ~/.tatami/privkey the build signs" 0 SIGNED -f "$SB/r/Tatamifile" -o "$SB/srepo"
+has "it says so" "Signing with $SGK/home/.tatami/privkey"
+[ -f "$SB/srepo/$NM.sig" ] && [ -f "$SB/srepo/repo.solv" ] && [ -f "$SB/srepo/repo.solv.sig" ] && ok "the package, its .sig, repo.solv and repo.solv.sig are in the output directory" || bad "signing output" "$(ls "$SB/srepo")"
+[ "$(head -c 4 "$SB/srepo/repo.solv")" = SOLV ] && ok "repo.solv is the tatami index" || bad "repo.solv"
+check "tatami can use the repository" 0 bash -c "mkdir -p '$SB/sroot/etc/tatami'; echo 'p = $SB/srepo' > '$SB/sroot/etc/tatami/repos.conf'; '$TATAMI' -r '$SB/sroot' list --available | grep -q sbox"
+check "a build with no key is unsigned" 0 env -u TATAMI_PRIVKEY HOME="$SB/nohome" PATH="$MOCKB:$PATH" TATAMI="$TATAMI" "$MKPKG" -m "$MASTER" -f "$SB/r/Tatamifile" -o "$SB/unsigned"
+has "it says that" "Not signing \(no key: run 'tatami keygen'\)"
+[ -f "$SB/unsigned/$NM" ] && [ ! -e "$SB/unsigned/$NM.sig" ] && [ ! -e "$SB/unsigned/repo.solv" ] && ok "no .sig, no index" || bad "unsigned build" "$(ls "$SB/unsigned")"
+check "--no-sign skips signing even with a key" 0 SIGNED --no-sign -f "$SB/r/Tatamifile" -o "$SB/nosign"
+[ -f "$SB/nosign/$NM" ] && [ ! -e "$SB/nosign/$NM.sig" ] && ok "no .sig with --no-sign" || bad "--no-sign" "$(ls "$SB/nosign")"
+check "a TATAMI_PRIVKEY that does not exist is an error" 1 env TATAMI_PRIVKEY="$SB/missing" PATH="$MOCKB:$PATH" TATAMI="$TATAMI" "$MKPKG" -m "$MASTER" -f "$SB/r/Tatamifile" -o "$SB/x"
+has "the message names it" "signing key $SB/missing \(TATAMI_PRIVKEY\) not found"
+[ ! -e "$SB/x" ] || [ -z "$(ls "$SB/x" 2>/dev/null)" ] && ok "and nothing is built" || bad "built despite the missing key"
+check "TATAMI_PRIVKEY wins over ~/.tatami/privkey" 0 env TATAMI_PRIVKEY="$SGK/home/.tatami/privkey" HOME="$SB/nohome" PATH="$MOCKB:$PATH" TATAMI="$TATAMI" "$MKPKG" -m "$MASTER" -f "$SB/r/Tatamifile" -o "$SB/srepo2"
+[ -f "$SB/srepo2/$NM.sig" ] && ok "signed with it" || bad "TATAMI_PRIVKEY not used"
+OUT=$(env TATAMI_PRIVKEY="$SGK/home/.tatami/privkey" TATAMI=/nonexistent/tatami PATH="$MOCKB:$PATH" "$MKPKG" -m "$MASTER" -f "$SB/r/Tatamifile" -o "$SB/x2" 2>&1); rc=$?
+[ $rc -ne 0 ] && echo "$OUT" | grep -q "needs the tatami binary" && echo "$OUT" | grep -q "TATAMI=/path/to/tatami" && ok "a key but no tatami binary: an error before anything is built" || bad "missing tatami binary" "$OUT"
+echo notakey > "$SB/bad.key"
+OUT=$(env TATAMI_PRIVKEY="$SB/bad.key" PATH="$MOCKB:$PATH" TATAMI="$TATAMI" "$MKPKG" -m "$MASTER" -f "$SB/r/Tatamifile" -o "$SB/x3" 2>&1); rc=$?
+[ $rc -ne 0 ] && echo "$OUT" | grep -q "could not sign" && ok "a key that cannot sign is an error" || bad "bad key" "$OUT"
+[ "$(leftovers)" = "$LEFT" ] && [ -z "$(ls /tmp | grep tatami-mkpkg-index)" ] && ok "and neither the workspace nor the index scratch directory is left" || bad "leftovers after a signing failure"
+
+echo "# commands that moved into tatami-mkpkg are gone from tatami"
+for c in bulkhead pack; do
+	OUT=$("$TATAMI" $c 2>&1); rc=$?
+	[ $rc -ne 0 ] && echo "$OUT" | grep -q "unknown command '$c'" && ok "tatami $c is an unknown command" || bad "tatami $c still exists (rc $rc)" "$OUT"
+done
+OUT=$("$TATAMI" --help 2>&1)
+echo "$OUT" | grep -Eqi 'bulkhead|^ *pack ' && bad "--help still mentions bulkhead or pack" "$OUT" || ok "--help mentions neither"
+printf 'BULKHEAD = no\n' > "$T/oldbulk.conf"
+check "BULKHEAD in tatami.conf is an unknown setting" 1 "$TATAMI" -r "$ROOT" -c "$T/oldbulk.conf" list
+has "reported as unknown, with its line" "oldbulk.conf:1: unknown setting 'BULKHEAD'"
 
 echo "# architecture-independent packages"
 mkpkg na-noarch 1.0 arch=noarch file=usr/share/na/noarch
@@ -467,18 +585,18 @@ check "noarch also installs from a file argument" 0 ty install "$REPO/na-any_1.0
 check "noarch installs when the host architecture is unknown to libsolv" 0 machine zz80 "$TATAMI" -r "$ROOT" -c "$CONF" -s install na-noarch
 
 echo "# package names: <name>_<version>-<release>_<arch>.tar.<compression>, or a fixed extension"
-DEFEXT=$(sed -n 's/^PKG_EXT="\([^"]*\)".*/\1/p' "$MKPKG" | head -1)
-[ "$DEFEXT" != "@DEFAULT_PKG_EXT@" ] && ok "the build-time extension was substituted in tatami-mkpkg (${DEFEXT:-automatic})" || bad "default extension not substituted in tatami-mkpkg" "$DEFEXT"
+DEFEXT=$(mk -h | sed -n "s/.*fixed when tatami was built: '\([^']*\)'.*/\1/p" | head -1)
+[ -n "$DEFEXT" ] && ok "the build-time extension is compiled into tatami-mkpkg (${DEFEXT:-automatic})" || bad "default extension not compiled into tatami-mkpkg" "$DEFEXT"
 [ "$DEFEXT" = tar.pkg ] && ok "the default extension is tar.pkg" || bad "default extension is not tar.pkg" "$DEFEXT"
-DEFCOMP=$(sed -n 's/^DEFAULT_COMPRESSION="\([^"]*\)".*/\1/p' "$MKPKG" | head -1)
+DEFCOMP=$(mk -h | sed -n "s/.*(default: '\([a-z0-9]*\)').*/\1/p" | head -1)
 [ "$DEFCOMP" = zst ] && ok "the build-time compression is zst by default" || bad "default compression is not zst" "$DEFCOMP"
 grep -v '^#' "$REPO_ROOT_DIR/build.conf" 2>/dev/null | grep -q '[^[:space:]]' && bad "build.conf has an active assignment" || ok "build.conf has only commented-out lines"
 EXPECT="$DEFEXT"
 mkdir -p "$T/extrepo" "$T/recipes/ext1"
 printf 'name=ext1\nversion=1\nrelease=3\narch='$HARCH'\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext1/Tatamifile"
-printf 'BULKHEAD = no\n' > "$T/noext.conf"
+printf '' > "$T/noext.conf"
 set_repos "$T/extroot" "$T/extrepo"
-check "tatami-mkpkg names the package by the build-time extension" 0 "$MKPKG" -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+check "tatami-mkpkg names the package by the build-time extension" 0 mk -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 [ -f "$T/extrepo/ext1_1-3_${HARCH}.$EXPECT" ] && ok "package is named ext1_1-3_${HARCH}.$EXPECT" || bad "default-named package missing" "$(ls "$T/extrepo")"
 [ "$(head -c 4 "$T/extrepo/ext1_1-3_${HARCH}.$EXPECT" | od -An -tx1 | tr -d ' \n')" = 28b52ffd ] && ok "and it is compressed with the build-time default, zstd" || bad "default compression"
 check "tatami recognises that name" 0 "$TATAMI" -r "$T/extroot" -c "$T/noext.conf" update
@@ -486,30 +604,32 @@ has "tatami found the default-named package" "1 package"
 hasnt "no naming warning" "named differently"
 
 # nothing at run time can change them: not the configuration, not the environment
-printf 'PKG_EXT = other\nBULKHEAD = no\n' > "$T/badext.conf"
+printf 'PKG_EXT = other\n' > "$T/badext.conf"
 check "PKG_EXT in tatami.conf is refused by tatami" 1 "$TATAMI" -r "$ROOT" -c "$T/badext.conf" list
 has "with a message that points to build.conf" "PKG_EXT is a compile-time setting.*build.conf"
-printf 'PKG_COMPRESSION = gz\nBULKHEAD = no\n' > "$T/badcomp.conf"
+printf 'PKG_COMPRESSION = gz\n' > "$T/badcomp.conf"
 check "PKG_COMPRESSION in tatami.conf is refused by tatami" 1 "$TATAMI" -r "$ROOT" -c "$T/badcomp.conf" list
 has "with the same message" "PKG_COMPRESSION is a compile-time setting.*build.conf"
 rm -f "$T/extrepo"/ext1_*
-printf 'PKG_EXT = other\nPKG_COMPRESSION = gz\nBULKHEAD = no\n' > "$T/ignored2.conf"
-OUT=$(PKG_EXT=envext PKG_COMPRESSION=gz "$MKPKG" -c "$T/ignored2.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo" 2>&1)
+printf 'PKG_EXT = other\nPKG_COMPRESSION = gz\n' > "$T/ignored2.conf"
+OUT=$(PKG_EXT=envext PKG_COMPRESSION=gz mk -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo" 2>&1)
 [ -f "$T/extrepo/ext1_1-3_${HARCH}.$EXPECT" ] && [ "$(ls "$T/extrepo" | grep -c "^ext1_")" = 1 ] && ok "tatami-mkpkg ignores PKG_EXT in the configuration and in the environment" || bad "tatami-mkpkg was influenced at run time" "$(ls "$T/extrepo")"
 [ "$(head -c 4 "$T/extrepo/ext1_1-3_${HARCH}.$EXPECT" | od -An -tx1 | tr -d ' \n')" = 28b52ffd ] && ok "and PKG_COMPRESSION too: still zstd" || bad "compression changed at run time"
 
 # other values need another build: variants are built from a copy of the sources
+# a variant's tatami-mkpkg through the mock sandbox: mkv <variant-dir> [options]
+mkv() { local v="$1"; shift; PATH="$MOCKB:$PATH" TATAMI="$v/tatami" "$v/tatami-mkpkg" -m "$MASTER" "$@"; }
 variant() { # <name> <make variables...>: builds tatami and tatami-mkpkg into $T/var-<name>
 	local d="$T/var-$1"; shift
 	rm -rf "$d"; mkdir -p "$d"
-	cp -r "$REPO_ROOT_DIR/src" "$REPO_ROOT_DIR/Makefile" "$REPO_ROOT_DIR/tatami-mkpkg.in" "$REPO_ROOT_DIR/build.conf" "$d/"
+	cp -r "$REPO_ROOT_DIR/src" "$REPO_ROOT_DIR/Makefile" "$REPO_ROOT_DIR/build.conf" "$d/"
 	rm -f "$d"/src/*.o "$d"/src/*.d
 	( cd "$d" && make -j4 DEPS_DIR="$REPO_ROOT_DIR/deps" "$@" ) > "$d/build.log" 2>&1
 }
 if variant custom PKG_EXT=tpkg PKG_COMPRESSION=gz; then
 	VC="$T/var-custom"; ok "a build with PKG_EXT=tpkg PKG_COMPRESSION=gz"
 	rm -f "$T/extrepo"/ext1_*
-	check "that tatami-mkpkg names the package .tpkg" 0 env TATAMI="$VC/tatami" "$VC/tatami-mkpkg" -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+	check "that tatami-mkpkg names the package .tpkg" 0 mkv "$VC" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 	[ -f "$T/extrepo/ext1_1-3_${HARCH}.tpkg" ] && ok "ext1_1-3_${HARCH}.tpkg" || bad "custom extension" "$(ls "$T/extrepo")"
 	[ "$(head -c 2 "$T/extrepo/ext1_1-3_${HARCH}.tpkg" | od -An -tx1 | tr -d ' \n')" = 1f8b ] && ok "compressed with gzip, the build-time compression" || bad "custom compression"
 	check "that tatami indexes it" 0 "$VC/tatami" -r "$T/extroot" -c "$T/noext.conf" update
@@ -521,17 +641,17 @@ else
 fi
 if variant auto PKG_EXT=; then
 	VA="$T/var-auto"; ok "a build with an empty PKG_EXT"
-	AUTOENV() { env TATAMI="$VA/tatami" "$VA/tatami-mkpkg" "$@"; }
+	AUTOENV() { mkv "$VA" "$@"; }
 	rm -rf "$T/extrepo"; mkdir -p "$T/extrepo"
-	check "an empty PKG_EXT names the package by its compression" 0 AUTOENV -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+	check "an empty PKG_EXT names the package by its compression" 0 AUTOENV -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 	[ -f "$T/extrepo/ext1_1-3_${HARCH}.tar.zst" ] && ok "default compression zstd: ext1_1-3_${HARCH}.tar.zst" || bad "automatic name missing" "$(ls "$T/extrepo")"
 	for c in xz gz bz2 lz4 lzma; do
-		check "tatami-mkpkg -z $c names the package tar.$c" 0 AUTOENV -z $c -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+		check "tatami-mkpkg -z $c names the package tar.$c" 0 AUTOENV -z $c -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 		[ -f "$T/extrepo/ext1_1-3_${HARCH}.tar.$c" ] && ok "ext1_1-3_${HARCH}.tar.$c exists" || bad "tar.$c package missing" "$(ls "$T/extrepo")"
 	done
-	check "tatami-mkpkg -z none names it .tar" 0 AUTOENV -z none -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+	check "tatami-mkpkg -z none names it .tar" 0 AUTOENV -z none -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 	[ -f "$T/extrepo/ext1_1-3_${HARCH}.tar" ] && ok "uncompressed package is ext1_1-3_${HARCH}.tar" || bad "plain tar package missing"
-	check "tatami-mkpkg refuses an unknown compression" 1 AUTOENV -z rot13 -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+	check "tatami-mkpkg refuses an unknown compression" 1 AUTOENV -z rot13 -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 	check "tatami indexes every tar.<compression> in one repository" 0 "$VA/tatami" -r "$T/extroot" -c "$T/noext.conf" update
 	has "the same package in several formats is indexed once" "Indexed 1 package "
 	has "and the extra copies are reported" "ext1 1-3 is already in the repository"
@@ -540,7 +660,7 @@ else
 fi
 if variant xzext PKG_EXT=tar.xz; then
 	rm -rf "$T/extrepo"; mkdir -p "$T/extrepo"
-	check "an extension that names a compression selects it" 0 env TATAMI="$T/var-xzext/tatami" "$T/var-xzext/tatami-mkpkg" -c "$T/noext.conf" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
+	check "an extension that names a compression selects it" 0 mkv "$T/var-xzext" -f "$T/recipes/ext1/Tatamifile" -o "$T/extrepo"
 	[ "$(head -c 6 "$T/extrepo/ext1_1-3_${HARCH}.tar.xz" | od -An -tx1 | tr -d ' \n')" = fd377a585a00 ] && ok "PKG_EXT=tar.xz packs with xz" || bad "extension-derived compression" "$(ls "$T/extrepo")"
 else
 	bad "variant build (PKG_EXT=tar.xz)" "$(tail -5 "$T/var-xzext/build.log")"
@@ -551,7 +671,7 @@ if variant lay SYSCONFDIR=/opt/etc DB_DIR=/srv/db CACHEDIR=/srv/cache; then
 	mkdir -p "$LR/opt/etc/tatami"; echo "lay = $T/layrepo" > "$LR/opt/etc/tatami/repos.conf"
 	HOME="$T/layhome" "$VL/tatami" keygen >/dev/null
 	printf 'name=laypkg\nversion=1\narch=%s\nbuild() { mkdir -p $PKG/usr/share/laypkg; echo lay > $PKG/usr/share/laypkg/f; }\n' "$HARCH" > "$T/layrepo.Tatamifile"
-	OUT=$(HOME="$T/layhome" TATAMI="$VL/tatami" "$VL/tatami-mkpkg" --no-bulkhead -c "$T/noext.conf" -f "$T/layrepo.Tatamifile" -o "$T/layrepo" 2>&1); rc=$?
+	OUT=$(HOME="$T/layhome" mkv "$VL" -f "$T/layrepo.Tatamifile" -o "$T/layrepo" 2>&1); rc=$?
 	[ $rc -eq 0 ] && [ "$(head -c 4 "$T/layrepo/repo.solv" 2>/dev/null)" = SOLV ] && [ -f "$T/layrepo/repo.solv.sig" ] && ok "tatami-mkpkg (SYSCONFDIR=/opt/etc) indexes and signs its output directory" || bad "tatami-mkpkg with a custom layout (exit $rc)" "$OUT"
 	check "tatami finds the repository in <root>/opt/etc/tatami/repos.conf" 0 "$VL/tatami" -r "$LR" -y install laypkg
 	[ -f "$LR/usr/share/laypkg/f" ] && ok "and installs from it" || bad "not installed"
@@ -569,12 +689,12 @@ rm -rf "$T/extrepo"; mkdir -p "$T/extrepo"
 # the architecture is part of the name, and an underscore inside it (x86_64) does not confuse the parser
 mkdir -p "$T/recipes/ext2"
 printf 'name=ext-two\nversion=2.5\nrelease=1\narch=x86_64\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext2/Tatamifile"
-check "build a package for x86_64 (hyphenated name, underscore in the arch)" 0 "$MKPKG" -c "$T/noext.conf" -f "$T/recipes/ext2/Tatamifile" -o "$T/extrepo"
+check "build a package for x86_64 (hyphenated name, underscore in the arch)" 0 mk -f "$T/recipes/ext2/Tatamifile" -o "$T/extrepo"
 [ -f "$T/extrepo/ext-two_2.5-1_x86_64.$EXPECT" ] && ok "named ext-two_2.5-1_x86_64.$EXPECT" || bad "x86_64 package name" "$(ls "$T/extrepo")"
 check "tatami parses it back without a naming warning" 0 "$TATAMI" -r "$T/extroot" -c "$T/noext.conf" update
 hasnt "no warning for a name whose arch contains an underscore" "named differently"
 printf 'name=ext3\nversion=1\narch=NoArch\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/ext2/Tatamifile"
-check "arch in any case: NoArch is written noarch" 0 "$MKPKG" -c "$T/noext.conf" -f "$T/recipes/ext2/Tatamifile" -o "$T/extrepo"
+check "arch in any case: NoArch is written noarch" 0 mk -f "$T/recipes/ext2/Tatamifile" -o "$T/extrepo"
 [ -f "$T/extrepo/ext3_1_noarch.$EXPECT" ] && ok "named ext3_1_noarch.$EXPECT" || bad "noarch name" "$(ls "$T/extrepo")"
 rm -rf "$T/extrepo"
 
@@ -582,9 +702,9 @@ echo "# compression formats: all read and written natively, no external program"
 for comp in gz zst xz bz2 lz4 lzma; do
 	mkdir -p "$T/comp-$comp/recipe" "$T/comp-$comp/repo" "$T/comp-$comp/root/etc"
 	printf 'name=cmp-%s\nversion=1\narch='$HARCH'\nbuild() { mkdir -p $PKG/usr/share/cmp; echo "compressed with %s" > $PKG/usr/share/cmp/%s; }\n' "$comp" "$comp" "$comp" > "$T/comp-$comp/recipe/Tatamifile"
-	printf 'BULKHEAD = no\n' > "$T/comp-$comp/conf"
+	printf '' > "$T/comp-$comp/conf"
 	set_repos "$T/comp-$comp/root" "$T/comp-$comp/repo"
-	check "tatami-mkpkg builds a $comp package" 0 "$MKPKG" -z "$comp" -c "$T/comp-$comp/conf" -f "$T/comp-$comp/recipe/Tatamifile" -o "$T/comp-$comp/repo"
+	check "tatami-mkpkg builds a $comp package" 0 mk -z "$comp" -f "$T/comp-$comp/recipe/Tatamifile" -o "$T/comp-$comp/repo"
 	pkgf="$T/comp-$comp/repo/cmp-${comp}_1_$HARCH.$EXT"
 	case "$comp" in gz) magic='1f8b' ;; zst) magic='28b52ffd' ;; xz) magic='fd377a585a00' ;; bz2) magic='425a68' ;; lz4) magic='04224d18' ;; lzma) magic='5d0000' ;; esac
 	[ "$(head -c 6 "$pkgf" | od -An -tx1 | tr -d ' \n' | cut -c1-${#magic})" = "$magic" ] && ok "the $comp package really is $comp-compressed" || bad "$comp package has the wrong compression" "$(head -c 6 "$pkgf" | od -An -tx1)"
@@ -924,7 +1044,7 @@ ROOT="$ROOT_MAIN"
 # ---------------------------------------------------------------------------
 # helpers for the sections below: build a package with its own tiny recipe
 #   mkp <repo-dir> <name> <version> <arch|-> <depends|-> [path:content]...
-TCONF="$T/mk.conf"; printf 'BULKHEAD = no\n' > "$TCONF"
+TCONF="$T/mk.conf"; printf '' > "$TCONF"
 mkp() {
 	local repo="$1" name="$2" version="$3" arch="$4" deps="$5"; shift 5
 	local dir="$T/recipes-x/$name-$version-$RANDOM" body="" f
@@ -938,7 +1058,7 @@ mkp() {
 		[ "$deps" != - ] && echo "depends=($deps)"
 		echo "build() {$body"; echo "}"
 	} > "$dir/Tatamifile"
-	"$MKPKG" -c "$TCONF" -f "$dir/Tatamifile" -o "$repo" > "$dir/log" 2>&1 || bad "tatami-mkpkg $name $version" "$(cat "$dir/log")"
+	fixture_build "$dir/Tatamifile" "$repo" > "$dir/log" 2>&1 || bad "fixture package $name $version" "$(cat "$dir/log")"
 }
 
 echo "# disk space: checked before anything is extracted"
@@ -998,7 +1118,7 @@ echo "# repositories: the binary repo.solv index"
 RP="$T/repos"; rm -rf "$RP"; mkdir -p "$RP/a" "$RP/b" "$RP/root/etc"
 mkp "$RP/a" rp-one 1.0 - '"rp-two >= 1.0"' usr/share/rp-one/f:one
 mkp "$RP/a" rp-two 1.0 - - usr/share/rp-two/f:two
-printf 'BULKHEAD = no\n' > "$RP/base.conf"
+printf '' > "$RP/base.conf"
 # a scenario is the repos.conf of the root: <name>.repos (no such file: no repos.conf at all)
 echo "ra = $RP/a" > "$RP/a.repos"
 ROOT_MAIN="$ROOT"; ROOT="$RP/root"
@@ -1065,7 +1185,7 @@ tr default -y remove rp-local >/dev/null 2>&1
 check "an empty repos.conf falls back to the default repository too" 0 "$TATAMI" -r "$ROOT" -c "$RP/base.conf" -y install rp-local
 printf '# only a comment\n' > "$ROOT/etc/tatami/repos.conf"; "$TATAMI" -r "$ROOT" -c "$RP/base.conf" -y remove rp-local >/dev/null 2>&1
 check "so does one with only comments" 0 "$TATAMI" -r "$ROOT" -c "$RP/base.conf" -y install rp-local
-printf 'REPO_DIRS = %s\nBULKHEAD = no\n' "$RP/a" > "$RP/olddirs.conf"
+printf 'REPO_DIRS = %s\n' "$RP/a" > "$RP/olddirs.conf"
 check "REPO_DIRS in tatami.conf is refused" 1 "$TATAMI" -r "$ROOT" -c "$RP/olddirs.conf" list
 has "with a pointer to repos.conf" "REPO_DIRS is gone: list the repositories in etc/tatami/repos.conf"
 ROOT="$ROOT_MAIN"
@@ -1081,7 +1201,7 @@ arch_try() { # machine package... : install in a fresh root on a host that repor
 	local mach="$1"; shift
 	rm -rf "$ROOT"; mkdir -p "$ROOT/etc"
 	set_repos "$ROOT" "$AR/repo"
-	printf 'BULKHEAD = no\n' > "$AR/c.conf"
+	printf '' > "$AR/c.conf"
 	OUT=$(machine "$mach" "$TATAMI" -r "$ROOT" -c "$AR/c.conf" -y install "$@" 2>&1); rc=$?
 }
 arch_try riscv64 ar-riscv64 ar-noarch; [ $rc -eq 0 ] && ok "a riscv64 target installs riscv64 and noarch packages" || bad "riscv64 target" "$OUT"
@@ -1095,23 +1215,23 @@ arch_try riscv64 ar-needs; [ $rc -ne 0 ] && echo "$OUT" | grep -q "ar-aarch64" &
 arch_try aarch64 ar-needs; [ $rc -eq 0 ] && exists "while on aarch64 it resolves" usr/share/ar-aarch64/f || bad "dependency on the right arch" "$OUT"
 # tatami-mkpkg takes the architecture from the recipe, never from the configuration
 mkdir -p "$AR/recipe"; printf 'name=ar-default\nversion=1\narch=riscv64\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$AR/recipe/Tatamifile"
-printf 'BULKHEAD = no\n' > "$AR/mk.conf"
-check "tatami-mkpkg builds for the architecture of the recipe" 0 "$MKPKG" -c "$AR/mk.conf" -f "$AR/recipe/Tatamifile" -o "$AR/out"
+printf '' > "$AR/mk.conf"
+check "tatami-mkpkg builds for the architecture of the recipe" 0 mk -f "$AR/recipe/Tatamifile" -o "$AR/out"
 [ -f "$AR/out/ar-default_1_riscv64.tar.pkg" ] && ok "ar-default_1_riscv64.tar.pkg" || bad "arch in file name" "$(ls "$AR/out")"
 check "tatami read the architecture back" 0 "$TATAMI" -c "$AR/mk.conf" files "$AR/out/ar-default_1_riscv64.tar.pkg"
-printf 'ARCH = riscv64\nBULKHEAD = no\n' > "$AR/old.conf"
+printf 'ARCH = riscv64\n' > "$AR/old.conf"
 check "ARCH in tatami.conf is an error that says where it went" 1 "$TATAMI" -c "$AR/old.conf" list
 has "it says the machine architecture is used" "ARCH is gone"
 printf 'name=ar-plain\nversion=1\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$AR/recipe/Plain"
-OUT=$("$MKPKG" -c "$AR/mk.conf" -f "$AR/recipe/Plain" -o "$AR/out" 2>"$AR/err.txt"); rc=$?
+OUT=$(mk -f "$AR/recipe/Plain" -o "$AR/out" 2>"$AR/err.txt"); rc=$?
 [ $rc -ne 0 ] && ok "tatami-mkpkg refuses a recipe without arch" || bad "recipe without arch built"
 [ "$(cat "$AR/err.txt")" = "Error: arch is not defined in Tatamifile" ] && ok "with exactly the message on stderr" || bad "error message" "$(cat "$AR/err.txt")"
 [ -z "$OUT" ] && ok "and nothing on stdout" || bad "stdout" "$OUT"
 printf 'name=ar-empty\nversion=1\narch=\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$AR/recipe/Empty"
-"$MKPKG" -c "$AR/mk.conf" -f "$AR/recipe/Empty" -o "$AR/out" 2>"$AR/err.txt"; rc=$?
+mk -f "$AR/recipe/Empty" -o "$AR/out" 2>"$AR/err.txt"; rc=$?
 [ $rc -ne 0 ] && [ "$(cat "$AR/err.txt")" = "Error: arch is not defined in Tatamifile" ] && ok "an empty arch= is the same error" || bad "empty arch" "$(cat "$AR/err.txt")"
 [ -z "$(ls "$AR/out" | grep 'ar-plain\|ar-empty')" ] && ok "no package was produced" || bad "package produced" "$(ls "$AR/out")"
-printf 'ARCH = riscv64\nBULKHEAD = no\n' > "$AR/ignored.conf"
+printf 'ARCH = riscv64\n' > "$AR/ignored.conf"
 ROOT="$ROOT_MAIN"
 
 echo "# --root: nothing outside the root is touched (usr-merged root with an ABSOLUTE link /lib -> /usr/lib)"
@@ -1127,7 +1247,7 @@ STAMP="$T/iso.stamp"; touch "$STAMP"; sleep 1
 # this package ships a file under lib/ whose name is also a real file in the HOST's /usr/lib
 mkp "$T/iso-repo" iso-pkg 1.0 - - "lib/$HF:from the package" lib/isolib.so:lib bin/isotool:tool usr/share/iso/data:data
 publish_index "$T/iso-repo" >/dev/null 2>&1
-printf 'BULKHEAD = no\n' > "$T/iso.conf"
+printf '' > "$T/iso.conf"
 set_repos "$IR" "$T/iso-repo"
 ti() { "$TATAMI" -r "$IR" -c "$T/iso.conf" "$@"; }
 OUT=$(ti -y install iso-pkg 2>&1); rc=$?
@@ -1178,7 +1298,7 @@ mkp "$T/hk-repo" hk-lib 1.0 - - usr/lib/libhk.so:lib
 mkp "$T/hk-repo" hk-lib2 1.0 - - usr/lib/libhk2.so:lib2
 mkp "$T/hk-repo" hk-data 1.0 - - usr/share/hk-data/f:data
 publish_index "$T/hk-repo" >/dev/null 2>&1
-printf 'BULKHEAD = no\n' > "$T/hk.conf"
+printf '' > "$T/hk.conf"
 set_repos "$HK" "$T/hk-repo"
 th() { "$TATAMI" -r "$HK" -c "$T/hk.conf" "$@"; }
 cat > "$HK/etc/tatami/hooks.d/10-libs.hook" <<'HOOK'
@@ -1263,7 +1383,7 @@ has "warns that the name differs from the contents" "renamed_9.9-1_$HARCH.$EXT i
 rm -f "$REPO/renamed_9.9-1_$HARCH.$EXT"; t update >/dev/null 2>&1
 mkdir -p "$T/recipes/under_score"
 printf 'name=under_score\nversion=1\narch='$HARCH'\nbuild() { mkdir -p $PKG/x; echo x > $PKG/x/f; }\n' > "$T/recipes/under_score/Tatamifile"
-check "tatami-mkpkg refuses '_' in a package name" 1 "$MKPKG" -c "$CONF" -f "$T/recipes/under_score/Tatamifile" -o "$T/failout"
+check "tatami-mkpkg refuses '_' in a package name" 1 mk -f "$T/recipes/under_score/Tatamifile" -o "$T/failout"
 has "explains why" "separates name and version"
 mkdir -p "$T/underdir/x"; echo x > "$T/underdir/x/f"
 printf 'name: us_er\nversion: 1\n' > "$T/underdir/.META"
@@ -1321,7 +1441,6 @@ publish_index "$SRVDIR/core" >/dev/null
 # the "network": a fetch command that logs and copies from $SRVDIR instead of connecting
 cat > "$T/rem.conf" <<'CONF'
 ALLOW_UNSIGNED = yes
-BULKHEAD = no
 FETCHCMD = sh -c 'echo "$0" >> "$FLOG"; cp "$SRVDIR/${0#https://mirror.test/}" "$1"' %URL% %DEST%
 CONF
 rr() { "$TATAMI" -r "$RR" -c "$T/rem.conf" "$@"; }
@@ -1356,14 +1475,14 @@ rr update >/dev/null 2>&1
 has_o=$(rr update 2>&1); echo "$has_o" | grep -q "not a valid index" && ok "an invalid downloaded index is rejected" || bad "invalid index accepted" "$has_o"
 cmp -s "$T/good.solv" "$RR/var/lib/tatami/repos/core/repo.solv" && ok "the previous index was kept" || bad "index replaced"
 # a failing / missing fetch command
-printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\nFETCHCMD = false %%URL%% %%DEST%%\n' > "$T/rem-fail.conf"
+printf 'ALLOW_UNSIGNED = yes\nFETCHCMD = false %%URL%% %%DEST%%\n' > "$T/rem-fail.conf"
 check "update with a failing FETCHCMD only warns" 0 "$TATAMI" -r "$RR" -c "$T/rem-fail.conf" update
-printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\nFETCHCMD = no-such-fetcher-xyz %%URL%% %%DEST%%\n' > "$T/rem-miss.conf"
+printf 'ALLOW_UNSIGNED = yes\nFETCHCMD = no-such-fetcher-xyz %%URL%% %%DEST%%\n' > "$T/rem-miss.conf"
 OUT=$("$TATAMI" -r "$RR" -c "$T/rem-miss.conf" update 2>&1); echo "$OUT" | grep -q "could not run no-such-fetcher-xyz" && ok "missing fetch program is reported" || bad "missing program" "$OUT"
-printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\nFETCHCMD = curl %%URL%%\n' > "$T/rem-bad.conf"
+printf 'ALLOW_UNSIGNED = yes\nFETCHCMD = curl %%URL%%\n' > "$T/rem-bad.conf"
 OUT=$("$TATAMI" -r "$RR" -c "$T/rem-bad.conf" update 2>&1); echo "$OUT" | grep -q "must contain %URL% and %DEST%" && ok "FETCHCMD without %DEST% is refused" || bad "bad FETCHCMD" "$OUT"
 # the default FETCHCMD is curl -f -L -# "%URL%" -o "%DEST%"
-printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\n' > "$T/rem-def.conf"
+printf 'ALLOW_UNSIGNED = yes\n' > "$T/rem-def.conf"
 mkdir -p "$T/fakebin"; printf '#!/bin/sh\necho "$@" > "$FLOG"\nexit 1\n' > "$T/fakebin/curl"; chmod +x "$T/fakebin/curl"
 PATH="$T/fakebin:$PATH" "$TATAMI" -r "$RR" -c "$T/rem-def.conf" update >/dev/null 2>&1
 grep -q -- '^-f -L -# https://mirror.test/core/repo.solv -o .*/repos/core/repo.solv.part$' "$FLOG" && ok "default FETCHCMD is: curl -f -L -# URL -o DEST" || bad "default command" "$(cat "$FLOG")"
@@ -1395,7 +1514,7 @@ printf '\r######################100.0%%\n' >&2
 cp "$SRVDIR/${1#https://mirror.test/}" "$2"
 PF
 chmod +x "$T/prog-fetch"
-printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\nFETCHCMD = %s %%URL%% %%DEST%%\n' "$T/prog-fetch" > "$T/prog.conf"
+printf 'ALLOW_UNSIGNED = yes\nFETCHCMD = %s %%URL%% %%DEST%%\n' "$T/prog-fetch" > "$T/prog.conf"
 echo "core = https://mirror.test/core" > "$RR/etc/tatami/repos.conf"; rm -rf "$RR/etc/tatami/repos.d"
 cp "$T/good.solv" "$SRVDIR/core/repo.solv" 2>/dev/null || publish_index "$SRVDIR/core" >/dev/null
 rm -f "$SRVDIR"/core/rm-*_1.0_*; mkp "$SRVDIR/core" rm-app 1.0 - - usr/share/rm-app/f:app; publish_index "$SRVDIR/core" >/dev/null
@@ -1428,7 +1547,7 @@ OUT=$("$TATAMI" -r "$RR" -c "$T/prog.conf" update 2>&1)
 echo "$OUT" | grep -q '\[#' && bad "a bar was drawn without a terminal" "$OUT" || ok "no bar when stdout is not a terminal"
 echo "$OUT" | grep -q '#' && bad "raw text without terminal" "$OUT" || ok "raw progress hidden without a terminal too"
 printf '#!/bin/sh\necho "curl: (22) The requested URL returned error: 404" >&2\nexit 22\n' > "$T/fail-fetch"; chmod +x "$T/fail-fetch"
-printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\nFETCHCMD = %s %%URL%% %%DEST%%\n' "$T/fail-fetch" > "$T/failmsg.conf"
+printf 'ALLOW_UNSIGNED = yes\nFETCHCMD = %s %%URL%% %%DEST%%\n' "$T/fail-fetch" > "$T/failmsg.conf"
 OUT=$("$TATAMI" -r "$RR" -c "$T/failmsg.conf" update 2>&1)
 echo "$OUT" | grep -q "exit status 22: curl: (22) The requested URL returned error: 404" && ok "a failing command's last message is in the error" || bad "no failure message" "$OUT"
 echo
@@ -1459,7 +1578,7 @@ SM="$T/summary"; rm -rf "$SM"; mkdir -p "$SM/root/etc" "$SM/repo"
 mkp "$SM/repo" sm-a 1.0 - sm-b usr/share/sm-a/f:one
 mkp "$SM/repo" sm-b 1.0 - - usr/share/sm-b/f:one
 mkp "$SM/repo" sm-c 1.0 - - usr/share/sm-c/f:one
-printf 'BULKHEAD = no\n' > "$SM/c.conf"
+printf '' > "$SM/c.conf"
 set_repos "$SM/root" "$SM/repo"
 sm() { "$TATAMI" -r "$SM/root" -c "$SM/c.conf" "$@"; }
 smp() { ptyrun "" "$TATAMI" -r "$SM/root" -c "$SM/c.conf" "$@"; }
@@ -1533,25 +1652,24 @@ check "sign with a malformed key fails" 1 "$TATAMI" sign "$SG/abc" "$SG/bad.key"
 cat > "$SG/Tatamifile" <<'RCP'
 name=sg-app
 version=1.0
-arch=$(uname -m)
+arch=@ARCH@
 build() { mkdir -p $PKG/usr/share/sg-app; echo signed > $PKG/usr/share/sg-app/f; }
 RCP
+sed -i "s/@ARCH@/$HARCH/" "$SG/Tatamifile"
 # gzip: a few appended bytes (the tampering below) still leave a readable archive, so the index step sees the package
-( cd "$SG" && HOME="$SG/home" "$MKPKG" -z gz -c "$TCONF" -f "$SG/Tatamifile" -o "$SG/srv/core" ) > "$SG/mk.log" 2>&1
+( cd "$SG" && HOME="$SG/home" mk -z gz -f "$SG/Tatamifile" -o "$SG/srv/core" ) > "$SG/mk.log" 2>&1
 P="sg-app_1.0_${HARCH}.tar.pkg"
 [ -f "$SG/srv/core/$P.sig" ] && [ -f "$SG/srv/core/repo.solv" ] && [ -f "$SG/srv/core/repo.solv.sig" ] && ok "tatami-mkpkg (with ~/.tatami/privkey) left the package, repo.solv and both .sig files" || bad "tatami-mkpkg did not sign" "$(cat "$SG/mk.log"; ls "$SG/srv/core")"
-( cd "$SG" && HOME="$SG/nohome" "$MKPKG" -c "$TCONF" -f "$SG/Tatamifile" -o "$SG/unsigned" ) > "$SG/mk2.log" 2>&1
-[ -f "$SG/unsigned/$P" ] && [ ! -e "$SG/unsigned/$P.sig" ] && [ ! -e "$SG/unsigned/repo.solv" ] && ok "without a key tatami-mkpkg builds as before, unsigned" || bad "unsigned build" "$(cat "$SG/mk2.log")"
-( cd "$SG" && HOME="$SG/home" "$MKPKG" --no-sign -c "$TCONF" -f "$SG/Tatamifile" -o "$SG/nosign" ) > "$SG/mk3.log" 2>&1
-[ -f "$SG/nosign/$P" ] && [ ! -e "$SG/nosign/$P.sig" ] && ok "--no-sign" || bad "--no-sign" "$(cat "$SG/mk3.log")"
-( cd "$SG" && TATAMI_PRIVKEY="$SG/missing" "$MKPKG" -c "$TCONF" -f "$SG/Tatamifile" -o "$SG/x" ) > "$SG/mk4.log" 2>&1 && bad "a missing TATAMI_PRIVKEY was ignored" || ok "TATAMI_PRIVKEY that does not exist is an error"
+
+# the same package, unsigned: built without a key (the later tests use it as a local repository)
+( cd "$SG" && HOME="$SG/nohome" mk -f "$SG/Tatamifile" -o "$SG/unsigned" ) > "$SG/mk2.log" 2>&1
+[ -f "$SG/unsigned/$P" ] && ok "an unsigned copy of the package for the local-repository tests" || bad "unsigned build" "$(cat "$SG/mk2.log")"
 
 # remote repository with a trusted key in etc/tatami/keys: everything fetched is verified
 KEYS="$SG/root/etc/tatami/keys"; mkdir -p "$KEYS"; cp "$SG/home/.tatami/privkey.pub" "$KEYS/core.pub"
 nokeys() { rm -rf "$KEYS.off"; mv "$KEYS" "$KEYS.off"; }
 restorekeys() { rm -rf "$KEYS"; mv "$KEYS.off" "$KEYS"; }
 cat > "$SG/ok.conf" <<'CONF'
-BULKHEAD = no
 FETCHCMD = sh -c 'echo "$0" >> "$FLOG"; cp "$SRVDIR/${0#https://mirror.test/}" "$1"' %URL% %DEST%
 CONF
 SRVDIR="$SG/srv"; export SRVDIR FLOG; FLOG="$SG/fetch.log"; : > "$FLOG"
@@ -1695,7 +1813,7 @@ mki() {
 	mkdir -p "$dir"
 	printf 'name=%s\nversion=%s\narch='$HARCH'\nbuild() { mkdir -p $PKG/usr/share/%s; echo "%s %s" > $PKG/usr/share/%s/f; }\n' "$name" "$version" "$name" "$name" "$version" "$name" > "$dir/Tatamifile"
 	[ "$body" != - ] && printf '%s\n' "$body" > "$dir/tatami.install"
-	"$MKPKG" -c "$TCONF" -f "$dir/Tatamifile" -o "$IS/repo" > "$dir/log" 2>&1 || bad "tatami-mkpkg $name" "$(cat "$dir/log")"
+	mk -f "$dir/Tatamifile" -o "$IS/repo" > "$dir/log" 2>&1 || bad "tatami-mkpkg $name" "$(cat "$dir/log")"
 }
 mki ins-a 1.0 'pre_install() { echo "pre a $1 root=$TATAMI_ROOT file_there=$([ -e "$TATAMI_ROOT/usr/share/ins-a/f" ] && echo yes || echo no)" >> "$ILOG"; }
 post_install() { echo "post a $1 file_there=$([ -e "$TATAMI_ROOT/usr/share/ins-a/f" ] && echo yes || echo no)" >> "$ILOG"; }
@@ -1759,7 +1877,7 @@ echo "# HoldPkg: held packages are not upgraded, the others are"
 HP="$T/hold"; rm -rf "$HP"; mkdir -p "$HP/srv/core" "$HP/root/etc/tatami"
 SRVDIR="$HP/srv"; FLOG="$HP/fetch.log"; export SRVDIR FLOG; : > "$FLOG"
 echo "core = https://mirror.test/core" > "$HP/root/etc/tatami/repos.conf"
-printf 'ALLOW_UNSIGNED = yes\nBULKHEAD = no\nFETCHCMD = sh -c '"'"'cp "$SRVDIR/${0#https://mirror.test/}" "$1"'"'"' %%URL%% %%DEST%%\n' > "$HP/plain.conf"
+printf 'ALLOW_UNSIGNED = yes\nFETCHCMD = sh -c '"'"'cp "$SRVDIR/${0#https://mirror.test/}" "$1"'"'"' %%URL%% %%DEST%%\n' > "$HP/plain.conf"
 cp "$HP/plain.conf" "$HP/hold.conf"
 # the held packages are read from <root>/etc/tatami/hold: hold_with <names...> / hold_none
 hold_with() { printf '%s\n' "$@" > "$HP/root/etc/tatami/hold"; }
@@ -1819,7 +1937,7 @@ mkp "$LC/other" ck-app 1.0 - - usr/share/ck-app/f:substituted
 publish_index "$LC/repo" >/dev/null
 CP="ck-app_1.0_${HARCH}.tar.pkg"
 cp "$LC/other/$CP" "$LC/repo/$CP"       # same name and version, other content: the index's SHA-256 is now wrong
-printf 'BULKHEAD = no\nALLOW_UNSIGNED = yes\n' > "$LC/c.conf"
+printf 'ALLOW_UNSIGNED = yes\n' > "$LC/c.conf"
 echo "mine = file://$LC/repo" > "$LC/root/etc/tatami/repos.conf"
 check "a file:// repository whose index has a wrong checksum still installs" 0 "$TATAMI" -y -r "$LC/root" -c "$LC/c.conf" install ck-app
 [ "$(cat "$LC/root/usr/share/ck-app/f")" = substituted ] && ok "the local file was used as it is, no hash check" || bad "unexpected content" "$(cat "$LC/root/usr/share/ck-app/f")"
@@ -1834,7 +1952,7 @@ echo "# remote repositories: local ones never use FETCHCMD"
 rm -rf "$RR"; mkdir -p "$RR/etc/tatami" "$T/loc-repo"
 mkp "$T/loc-repo" lc-app 1.0 - - usr/share/lc-app/f:app
 : > "$FLOG"
-printf 'BULKHEAD = no\nFETCHCMD = sh -c '"'"'echo called >> "$FLOG"; exit 1'"'"' %%URL%% %%DEST%%\n' > "$T/loc.conf"
+printf 'FETCHCMD = sh -c '"'"'echo called >> "$FLOG"; exit 1'"'"' %%URL%% %%DEST%%\n' > "$T/loc.conf"
 lr() { "$TATAMI" -r "$RR" -c "$T/loc.conf" "$@"; }
 echo "mine = $T/loc-repo" > "$RR/etc/tatami/repos.conf"
 check "update of a local path repository" 0 lr update
@@ -1858,7 +1976,7 @@ echo "# sensible defaults: nothing configured at all"
 DF="$T/defaults"; rm -rf "$DF"; mkdir -p "$DF/recipe" "$DF/out" "$DF/root"
 printf 'name=dflt\nversion=1.0\narch='$HARCH'\nbuild() { mkdir -p "$PKG/usr/bin"; echo hi > "$PKG/usr/bin/dflt"; }\n' > "$DF/recipe/Tatamifile"
 # no config file (-c points nowhere): the build-time extension and compression
-( cd "$DF/recipe" && "$MKPKG" -c "$DF/none.conf" --no-bulkhead -o "$DF/out" ) >"$DF/mk.log" 2>&1
+( cd "$DF/recipe" && mk -o "$DF/out" ) >"$DF/mk.log" 2>&1
 [ -f "$DF/out/dflt_1.0_$HARCH.tar.pkg" ] && ok "default package is <name>_<version>_<arch of the recipe>.tar.pkg" || bad "default package name"
 check "tatami reads the unconfigured package" 0 bash -c "'$TATAMI' -r '$DF/root' -c '$DF/none.conf' show '$DF/out/dflt_1.0_$HARCH.tar.pkg' >/dev/null || true"
 mkdir -p "$DF/root/etc/tatami"

@@ -52,14 +52,13 @@ NAME = tatami-$(VERSION)
 # content). An empty PKG_EXT means tar.<compression> (tar.zst, tar.xz, ...), all of
 # which tatami then accepts. Another extension for both tools:
 #   make PKG_EXT=myext
-# tatami gets it as -DDEFAULT_PKG_EXT, tatami-mkpkg as the @DEFAULT_PKG_EXT@ substitution.
+# Both tools get it as -DDEFAULT_PKG_EXT.
 # It is fixed: there is no run-time override (tatami.conf refuses PKG_EXT).
 PKG_EXT ?= tar.pkg
 PKG_EXT := $(strip $(PKG_EXT))
 
-# The compression tatami-mkpkg uses unless -z or a PKG_EXT that names one says otherwise:
-# gz, zst, xz, bz2, lz4, lzma or none. tatami-mkpkg gets it as the
-# @DEFAULT_PKG_COMPRESSION@ substitution; there is no run-time setting for it.
+# The compression for packages: gz, zst, xz, bz2, lz4, lzma or none (there is no
+# run-time setting for it; tatami-mkpkg -z overrides it for one build).
 PKG_COMPRESSION ?= zst
 PKG_COMPRESSION := $(strip $(PKG_COMPRESSION))
 ifeq ($(filter $(PKG_COMPRESSION),gz zst xz bz2 lz4 lzma none),)
@@ -131,7 +130,7 @@ DEP_ARCHIVES = $(LIBSOLV_A) $(LIBARCHIVE_A) $(XZ_A) $(BZIP2_A) $(LZ4_A) $(SODIUM
 
 CXXFLAGS ?= -O2
 CXXFLAGS += -std=c++11 -Wall -Wextra -pedantic -D_GNU_SOURCE -DVERSION=\"$(VERSION)\" \
-	    -DDEFAULT_PKG_EXT=\"$(PKG_EXT)\" \
+	    -DDEFAULT_PKG_EXT=\"$(PKG_EXT)\" -DDEFAULT_PKG_COMPRESSION=\"$(PKG_COMPRESSION)\" \
 	    -DTATAMI_SYSCONFDIR=\"$(RT_SYSCONFDIR)\" -DTATAMI_DB_DIR=\"$(RT_DB_DIR)\" \
 	    -DTATAMI_CACHEDIR=\"$(RT_CACHEDIR)\" -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 \
 	    -isystem $(LIBSOLV_INC) \
@@ -149,7 +148,7 @@ ifeq ($(STATIC),yes)
 LDFLAGS += -static
 endif
 
-SRCS = main.cc bulkhead.cc commands.cc engine.cc resolver.cc db.cc txn.cc rootfs.cc hooks.cc pack.cc pkgarchive.cc meta.cc config.cc repos.cc sign.cc util.cc
+SRCS = main.cc commands.cc engine.cc resolver.cc db.cc txn.cc rootfs.cc hooks.cc pkgarchive.cc meta.cc config.cc repos.cc sign.cc util.cc
 OBJECTS = $(SRCS:%.cc=src/%.o)
 
 all: tatami tatami-mkpkg
@@ -286,17 +285,22 @@ $(LIBARCHIVE_BUILD)/Makefile: $(ZLIB_A) $(ZSTD_A) $(XZ_A) $(BZIP2_A) $(LZ4_A)
 $(LIBARCHIVE_A): $(LIBARCHIVE_BUILD)/Makefile
 	$(MAKE) -C $(LIBARCHIVE_BUILD) archive_static
 
-tatami-mkpkg: tatami-mkpkg.in .flags
-	sed -e "s/#VERSION#/$(VERSION)/" -e "s/@DEFAULT_PKG_EXT@/$(PKG_EXT)/" \
-	    -e "s/@DEFAULT_PKG_COMPRESSION@/$(PKG_COMPRESSION)/" \
-	    -e "s|@SYSCONFDIR@|$(SYSCONFDIR)|" $< > $@
-	chmod +x $@
+# tatami-mkpkg: one C++17 file plus the archive writer of tatami (pack.cc), linked
+# statically with libarchive and the compression libraries only
+MKPKG_OBJECTS = src/mkpkg.o src/pack.o src/meta.o src/util.o
+MKPKG_ARCHIVES = $(LIBARCHIVE_A) $(ZSTD_A) $(XZ_A) $(BZIP2_A) $(LZ4_A) $(ZLIB_A)
+
+tatami-mkpkg: $(MKPKG_OBJECTS) $(MKPKG_ARCHIVES)
+	$(CXX) $(LDFLAGS) -o $@ $(MKPKG_OBJECTS) $(MKPKG_ARCHIVES) -static
+
+src/mkpkg.o: src/mkpkg.cpp .flags
+	$(CXX) $(filter-out -std=c++11,$(CXXFLAGS)) -std=c++17 -MMD -MP -c $< -o $@
 
 # libsolv's headers must be staged before anything is compiled (order-only)
 src/%.o: src/%.cc .flags | $(LIBSOLV_STAMP) $(SODIUM_BUILD)/Makefile
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
--include $(OBJECTS:.o=.d)
+-include $(OBJECTS:.o=.d) $(MKPKG_OBJECTS:.o=.d)
 
 .PHONY: install clean distclean check FORCE
 

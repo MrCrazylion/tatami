@@ -3,8 +3,8 @@
 tatami is a small package manager for Linux in the spirit of CRUX's pkgutils: a
 plain-text package database, packages that are tar archives, and a separate builder
 (`tatami-mkpkg`). On top of that it has an apt-style command line and a real dependency
-solver (libsolv). About 6,300 lines of C++11 and Bash, one multi-purpose binary,
-`tatami`, plus the recipe builder `tatami-mkpkg`.
+solver (libsolv). About 7,000 lines of C++11 and C++17, one multi-purpose binary,
+`tatami`, plus the standalone recipe builder `tatami-mkpkg`.
 
 This document describes what exists today, why it is built that way, and where the
 limits are. It does not describe plans.
@@ -40,18 +40,19 @@ limits are. It does not describe plans.
 
 | Module | Responsibility |
 |---|---|
-| `main.cc` | Option parsing, config loading; `keygen`, `sign`, `pack`, `bulkhead` are dispatched before the config is read |
+| `main.cc` | Option parsing, config loading; `keygen` and `sign` are dispatched before the config is read |
 | `commands.cc` | All user commands, repository loading, remote update/fetch, signature policy, the transaction driver |
 | `resolver.cc` | libsolv: architecture policy, repositories, jobs, locks, plans, explanations |
 | `engine.cc` | The transaction: begin / install / remove / commit / rollback, hooks, install scripts |
 | `txn.cc` | The undo journal and crash recovery |
 | `db.cc` | The plain-text package database and its lock |
-| `pkgarchive.cc`, `pack.cc` | Reading, extracting and writing packages with libarchive |
+| `pkgarchive.cc` | Reading and extracting packages with libarchive |
+| `pack.cc` | Writing packages with libarchive; linked into `tatami-mkpkg` only, there is no `tatami pack` command |
 | `rootfs.cc` | Path confinement to the root |
 | `repos.cc` | `repos.conf` / `repos.d`, running `FETCHCMD`, the progress bar |
 | `sign.cc` | Ed25519 and SHA-256 through libsodium; `keygen` and `sign` |
 | `hooks.cc` | Post-transaction hooks |
-| `bulkhead.cc` | The bubblewrap command line used by `tatami-mkpkg` |
+| `mkpkg.cpp` | **`tatami-mkpkg`**: a standalone C++17 program (recipe parser, sources, sandbox engine, workspace guard, packing and signing driver). Linked statically with `pack.cc`, `meta.cc`, `util.cc` and libarchive only |
 | `config.cc`, `meta.cc`, `util.cc` | Configuration, package metadata, helpers |
 
 **Dependency resolution** is delegated to libsolv: installed packages form the
@@ -265,7 +266,7 @@ with pacman's `IgnorePkg`). Held packages that are not installed are ignored.
 
 ### Where things are configured
 
-- `/etc/tatami/tatami.conf` — engine settings only (`FETCHCMD`, `ALLOW_UNSIGNED`, `BULKHEAD`). Missing, empty or
+- `/etc/tatami/tatami.conf` — engine settings only (`FETCHCMD`, `ALLOW_UNSIGNED`). Missing, empty or
   unreadable is fine: the built-in defaults apply. The old `ARCH`, `HoldPkg`, `PUBKEY`, `PKG_EXT`, `PKG_COMPRESSION`, `REPO_DIRS` and rule lines
   are refused with a message that names their new home.
 - `/etc/tatami/repos.conf`, `repos.d/*.conf` — repository definitions and nothing else
@@ -281,8 +282,8 @@ with pacman's `IgnorePkg`). Held packages that are not installed are ignored.
   active empty assignment would stop the Makefile's `?=` defaults from applying; to
   override a default, uncomment and edit its line. The `make` command line beats both.
   `SYSCONFDIR`, `DB_DIR` and `CACHEDIR` are validated and compiled in as paths *below the
-  root*, so a custom layout still works with `--root`; `PKG_EXT` is compiled into tatami and
-  substituted into `tatami-mkpkg`, as is `PKG_COMPRESSION`; **both are compile-time only** (`tatami.conf` refuses them, `tatami-mkpkg` ignores the environment, only `tatami-mkpkg -z` overrides the compression); `PREFIX`, `BINDIR`, `MANDIR` and
+  root*, so a custom layout still works with `--root`; `PKG_EXT` and `PKG_COMPRESSION` are compiled into tatami and into
+  `tatami-mkpkg` (as `-DDEFAULT_PKG_EXT` and `-DDEFAULT_PKG_COMPRESSION`); **both are compile-time only** (`tatami.conf` refuses them, `tatami-mkpkg` ignores the environment, only `tatami-mkpkg -z` overrides the compression); `PREFIX`, `BINDIR`, `MANDIR` and
   `DESTDIR` control `make install`. The layout defaults to the FHS: `/etc/tatami`,
   `/var/lib/tatami`, `/var/cache/tatami`.
 
@@ -290,40 +291,86 @@ with pacman's `IgnorePkg`). Held packages that are not installed are ignored.
 
 ## 5. Package building — `tatami-mkpkg`
 
-### The `Tatamifile`
+`tatami-mkpkg` is one C++17 source file, `src/mkpkg.cpp`, built into a **statically linked
+binary** (`make` links it with `pack.o`, `meta.o`, `util.o` and the vendored libarchive and
+compression libraries; no libsolv, no libsodium). It replaces the former bash script: no shell
+and no `tar` on the host, no configuration file, no `--no-sandbox` mode.
 
-A bash fragment, in the pkgutils `Pkgfile` style with real dependency fields:
+### The `Tatamifile`: a minimalist, strict subset of shell
 
 ```bash
 # Description: Compression library
 name=zlib
 version=1.3.2
-release=1
+release=1                                     # optional
+arch=x86_64                                   # mandatory; noarch / all / any are all "noarch"
 source=(https://example.org/zlib-$version.tar.gz)
-depends=(libfoo "libbar >= 2.0" "a | b")      # also conflicts, provides, replaces
-arch=noarch                                   # required; no fallback
+depends=(libfoo "libbar >= 2.0" "a | b")
+makedepends=(gcc)                             # ignored
 
 build() {
         cd zlib-$version
-        ./configure --prefix=/usr && make && make DESTDIR=$PKG install
+        ./configure --prefix=/usr && make
 }
+package() { cd zlib-$version; make DESTDIR=$PKG install; }
 ```
 
-The result is `<name>_<version>-<release>_<arch>.<extension>`, by default `tar.pkg` (fixed at build time; the compression inside is detected from the content; an empty `PKG_EXT` gives `tar.<compression>` instead), for example
-`zlib_1.3.2-1_x86_64.tar.pkg`. Names and versions may not contain `_`, so the first two
-underscores are the separators. Sources are downloaded next to the recipe, checked
-against `.md5sum` if present, and unpacked. **Packing is done by `tatami pack`
-(libarchive)**, not by host `tar`: gzip, zstd (the default), xz, lzma, bzip2, lz4 or
-none, with `.META` first, sorted entries and numeric owners.
+The recipe is read by a hand-written parser (`class parser`); the host never sources it.
+`name`, `version`, `arch` and `build()` are **mandatory** (`arch` has no fallback: the error is
+exactly `Error: arch is not defined in Tatamifile`); `release`, `source`, `depends`,
+`package()` and the `# Description:` comment are **optional**; every other assignment —
+`makedepends`, `conflicts`, `replaces`, `provides` — is skipped without being interpreted and never
+reaches the package. A command, a pipe or any other statement is a syntax error with its line
+number, an unset `$variable` is an error, and function bodies are found by brace matching that
+respects quotes and comments and are handed to the sandbox verbatim.
 
-### The bubblewrap sandbox (`bulkhead`)
+The result is `<name>_<version>[-<release>]_<arch>.<extension>`, by default `tar.pkg`
+(`PKG_EXT` and `PKG_COMPRESSION` are fixed at build time; `-z` overrides the compression for one
+build; an empty `PKG_EXT` gives `tar.<compression>`). Names may not contain `_`, so the first two
+underscores are the separators. **Packing is `pack_archive()` from `pack.cc`** (linked into
+`tatami-mkpkg` only): libarchive, `.META` first, sorted entries, numeric owners.
 
-By default `build()` runs inside `bwrap` through `tatami bulkhead`: the whole system is
-mounted read-only, `/tmp`, `/home` and `/root` are tmpfs, the network and PID namespaces
-are unshared, the sandbox dies with its parent, and only the package root
-(`/tmp/destdir`, which is `$PKG` and `DESTDIR`) and the build directory are writable.
-If `bwrap` is missing the build **fails** rather than running unprotected;
-`--no-bulkhead` or `BULKHEAD=no` turns the sandbox off explicitly.
+Sources are fetched with `curl` next to the recipe (if not already there), checked with
+`md5sum -c` against `.md5sum` when it exists, and unpacked with libarchive into `src/`; entries
+with absolute or `..` paths are refused.
+
+### Zero-host isolation: the sandbox engine
+
+The `bwrap` command line is built inside the program and started with `fork`/`execvp`:
+
+```
+bwrap --unshare-all --die-with-parent --new-session --clearenv
+      --ro-bind <masterdir> /  --dev /dev  --proc /proc  --tmpfs /tmp
+      --bind /tmp/<hash> /build  --chdir /build/src
+      --setenv SRC /build/src  --setenv PKG /build/pkg  ...
+      -- /bin/sh -c '<build() and package() as written, then the calls, under set -e>'
+```
+
+- The **masterdir is the root file system, read-only**. It holds the base system and the toolchain; a
+  build can use nothing else and cannot change it. `bwrap` cannot create mount points on a
+  read-only root, so `dev`, `proc`, `tmp` and `build` are created in it first.
+- The workspace has two **separate** directories, `src/` (sources, the working directory) and
+  `pkg/` (the package root), so unpacked sources can never be mistaken for the package.
+- The environment is cleared and set explicitly; nothing of the host's reaches the build.
+- If `bwrap` cannot be started the build fails; it never runs unprotected. SIGINT, SIGTERM and
+  SIGHUP are forwarded to the sandbox (it runs in its own session).
+
+### Transactional workspace
+
+The workspace is `/tmp/<hash>`: 24 characters from `a-z0-9`, drawn from `/dev/urandom` without
+modulo bias and created with `mkdir` (mode 0700, retried on `EEXIST`, so an existing name is never
+reused). A RAII class (`workspace`) owns it. Its destructor makes read-only directories writable
+and removes the tree on **every** exit path — success, a failed build, an error or an
+exception, an interrupt — and refuses to delete anything that is not `/tmp/` plus 16–32 of
+`a-z0-9`. Only SIGKILL or a machine crash can leave it behind.
+
+### Signing and indexing
+
+With a key (`$TATAMI_PRIVKEY`, which must then exist, or `~/.tatami/privkey`) and unless
+`--no-sign`, the finished package is signed by running the `tatami` binary (`$TATAMI`): `tatami -r
+<scratch root> update` refreshes `repo.solv` of the output directory (listed in a throw-away
+`repos.conf` below the build-time sysconfdir, removed afterwards), then `tatami sign` signs the
+package and `repo.solv`. The program links neither libsodium nor libsolv.
 
 ### Zero-config install scripts
 
@@ -346,8 +393,7 @@ arguments, no command line is built from package data), and the file is removed.
 
 ### Signing
 
-See §3: with a key present, `tatami-mkpkg` refreshes and signs the output directory's index and
-the package as part of the build.
+See §3 and "Signing and indexing" above.
 
 ---
 
@@ -393,11 +439,16 @@ ships the `ldconfig` hook as an example.
 
 ## 7. Testing and reliability
 
-`tests/run.sh` is a single end-to-end script: **689 checks**, all passing, plus
-`tests/test_permissions.sh` (5 checks). The suite builds real packages with `tatami-mkpkg`,
-drives `tatami` against scratch roots, and compares complete filesystem snapshots
+`tests/run.sh` is a single end-to-end script: **856 checks**, all passing, plus
+`tests/test_permissions.sh` (5 checks). The packages the `tatami` tests install are packed by
+a small Python helper from old-style recipes (so they can carry `conflicts`, `provides` and `replaces`, which
+`tatami-mkpkg` ignores); `tatami-mkpkg` itself is tested separately, through a mock `bwrap`. The suite drives `tatami` against scratch roots, and compares complete filesystem snapshots
 before and after failures. It covers:
 
+- `tatami-mkpkg`: the exact `bwrap` arguments, the `/tmp/<hash>` workspace and its deletion after
+  success, failure, a missing `bwrap` or masterdir and SIGTERM, the `src`/`pkg` layout, the parser (mandatory,
+  optional and ignored fields, syntax errors), sources (fetching, `.md5sum`, unsafe tarballs), signing and
+  its key errors;
 - naming, all compression formats (read and written with an empty `PATH`), and
   architecture policy (a `uname()` shim fakes the host);
 - install reasons and cascading removal;
@@ -423,7 +474,8 @@ verification, hash comparison, the lock job, the `pre_install` abort, the journa
 commit record): disabling each makes specific tests fail.
 
 **Not yet exercised:** a real HTTP mirror with a real `curl`; a real `bwrap` (this
-build host cannot create user namespaces, so the sandbox is tested with a mock); an
+build host cannot create user namespaces, so `tatami-mkpkg`'s sandbox is tested with a mock that records
+the arguments and runs the build in the host workspace); an
 actual power-loss test around the database rename; hosts other than `aarch64`.
 
 ---

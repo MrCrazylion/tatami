@@ -44,7 +44,6 @@ struct config_t {
 	string fetchcmd;                // downloads remote repositories (FETCHCMD)
 	bool allow_unsigned;            // ALLOW_UNSIGNED: remote data without signatures is accepted
 	vector<pubkey_t> trusted_keys;  // the files of etc/tatami/keys: a signature by any of them is good
-	string bulkhead;                // tatami-mkpkg only: "yes" or "no" (build isolation)
 	vector<rule_t> rules;           // etc/tatami/upgrade.rules: UPGRADE/INSTALL rules
 };
 

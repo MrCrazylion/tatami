@@ -75,10 +75,6 @@ config_t read_config(const string& filename, bool required)
 				cfg.allow_unsigned = value == "yes";
 			} else if (key == "PUBKEY") {
 				throw runtime_error(where + "PUBKEY is gone: put the public key file into " KEYS_DIR "/");
-			} else if (key == "BULKHEAD") {
-				if (value != "yes" && value != "no")
-					throw runtime_error(where + "invalid BULKHEAD '" + value + "', should be yes or no");
-				cfg.bulkhead = value;
 			} else if (key == "HoldPkg" || key == "HOLDPKG") {
 				throw runtime_error(where + "HoldPkg moved to " + HOLD_FILE + ", one package name per line");
 			} else if (key == "ARCH") {

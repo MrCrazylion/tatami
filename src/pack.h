@@ -1,12 +1,13 @@
 #ifndef PACK_H
 #define PACK_H
 
-// Entry point of  tatami pack [-z <compression>] <meta-file> <source-dir> <output>
-//
-// Creates a package archive with libarchive itself, so building a package needs
-// no tar or compression program on the host: .META (from <meta-file>) first,
-// then everything below <source-dir>, sorted, with numeric owners. The
-// compression is gz, zst, xz, bz2, lz4, lzma or none (default zst).
-int pack_main(int argc, char** argv);
+#include <string>
+
+// Writes a package archive with libarchive itself, so building a package needs no tar or
+// compression program on the host: <meta_file> is stored as .META, first, then everything
+// below <source_dir>, sorted, with numeric owners. compression is gz, zst, xz, bz2, lz4, lzma
+// or none. Throws std::runtime_error; the caller removes a partly written <output>.
+void pack_archive(const std::string& compression, const std::string& meta_file,
+		  const std::string& source_dir, const std::string& output);
 
 #endif /* PACK_H */

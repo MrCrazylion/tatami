@@ -1,12 +1,12 @@
 .TH TATAMI.CONF 5 "" "tatami"
 .SH NAME
-tatami.conf \- configuration of tatami and tatami\-mkpkg, held packages, file rules, repository lists and hooks
+tatami.conf \- configuration of tatami, held packages, file rules, repository lists and hooks
 .SH DESCRIPTION
 .B tatami.conf
 configures
-.BR tatami (8)
-and
-.BR tatami\-mkpkg (8).
+.BR tatami (8).
+.BR tatami\-mkpkg (8)
+does not read it.
 It is optional: if it is missing, empty or unreadable the built\-in defaults are used
 and tatami works offline with the local repository
 .BR /var/lib/tatami/packages .
@@ -81,16 +81,6 @@ Whether remote repositories without a trusted key, and unsigned remote data, are
 With
 .B yes
 unsigned remote data is accepted (the SHA\-256 checksums of the index are still checked).
-.TP
-.B BULKHEAD
-.B yes
-(the default) or
-.BR no :
-whether
-.BR tatami\-mkpkg
-builds in a
-.BR bwrap (1)
-sandbox.
 .SH FIXED AT BUILD TIME
 The package extension
 .RB ( PKG_EXT ,

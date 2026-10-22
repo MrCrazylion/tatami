@@ -1,6 +1,6 @@
 .TH TATAMI\-MKPKG 8 "" "tatami"
 .SH NAME
-tatami\-mkpkg \- build tatami packages from a recipe
+tatami\-mkpkg \- build a tatami package from a recipe, in a sandbox
 .SH SYNOPSIS
 .B tatami\-mkpkg
 .RI [ options ]
@@ -8,12 +8,28 @@ tatami\-mkpkg \- build tatami packages from a recipe
 .B tatami\-mkpkg
 reads a recipe, the
 .BR Tatamifile ,
-in the current directory, builds the software it describes into a staging directory
-and packs the result into a package for
+runs the
+.B build()
+and
+.B package()
+functions it defines inside a
+.BR bwrap (1)
+sandbox, and packs the result into a package for
 .BR tatami (8).
-The recipe format is that of the pkgutils
-.BR Pkgfile ,
-with real dependency fields.
+.PP
+It is a standalone, statically linked C++ program.
+It replaces the former bash script: no shell, no
+.BR tar ,
+no compression program and no configuration file is involved on the host.
+The recipe is read by a parser of its own (the host never runs it), sources are
+unpacked and the package is written with libarchive, and the only programs it starts are
+.BR bwrap ,
+.BR curl
+and
+.BR md5sum
+for remote sources, and
+.B tatami
+for signing.
 .PP
 The package is named
 .IB name _ version [\- release ]_ arch . extension
@@ -21,72 +37,295 @@ for example
 .BR zlib_1.3.2\-1_x86_64.tar.pkg ,
 and is written to the output directory.
 .SH THE TATAMIFILE
-The recipe is a bash fragment.
-A line of the form
+The recipe uses a small, strict subset of shell syntax.
+It is read by
+.B tatami\-mkpkg
+itself and nothing in it is executed on the host; only the bodies of
+.B build()
+and
+.B package()
+are run, and only inside the sandbox.
+A line
 .B # Description: \fItext\fR
 gives the package a description.
+.SS Mandatory
 .TP
-.B name, version
-Required. Names and versions may not contain an underscore; the name must start with
-a letter or digit.
+.B name
+Letters, digits and
+.BR "+ . ~ : \-" ;
+it must start with a letter or digit.
+An underscore is not allowed: it separates the name and the version in file names.
 .TP
-.B release
-Optional; the package version becomes
-.IB version \- release\fR.
-.TP
-.B source
-An array of files or URLs.
-URLs are downloaded next to the recipe unless the file is already there;
-other files are taken from the recipe's directory.
-If a file
-.B .md5sum
-exists, the sources are checked against it.
-Archives (tar, zip) are unpacked into the source directory, other files copied.
-.TP
-.B depends, conflicts, provides, replaces
-Arrays of relations, one per element:
-.BR libfoo ,
-.BR "libbar >= 2.0" ,
-.BR "a | b" .
-An element may not contain a comma.
+.B version
+The same characters.
 .TP
 .B arch
-Required. There is no default:
-without it (or with an empty value) tatami\-mkpkg prints
+There is no default.
+Without it (or with an empty value)
+.B tatami\-mkpkg
+prints
 .B Error: arch is not defined in Tatamifile
 and exits with status 1.
-Use the target architecture, or
+Use the target architecture, such as
+.BR x86_64 ,
+or
 .B noarch
-for architecture\-independent packages.
-It is never taken from the configuration or the build machine.
+for architecture\-independent packages;
 .BR noarch ,
 .B all
 and
 .B any
-mean a package that is not tied to an architecture.
+(in any case) mean a package that is not tied to an architecture.
 .TP
 .B build()
-Required. It is run in the source directory
+Run in the source directory
 .RB ( $SRC )
 and must install into
 .BR $PKG ,
 for example with
 .BR "make DESTDIR=$PKG install" .
+.SS Optional
+.TP
+.B release
+The package version becomes
+.IB version \- release\fR.
+Without it the name is
+.IB name _ version _ arch\fR.
+.TP
+.B source
+A word or an array of files and URLs; see
+.BR SOURCES .
+.TP
+.B depends
+An array of relations, one per element:
+.BR libfoo ,
+.BR "libbar >= 2.0" ,
+.BR "a | b" .
+An element may not contain a comma.
+.TP
+.B package()
+Run after
+.B build()
+in the same sandbox, with the same environment.
+Useful to split installing from building.
+.SS Ignored
+Every other assignment is read to the end of its line or array and discarded, without
+being interpreted: in particular
+.BR makedepends ,
+.BR conflicts ,
+.B replaces
+and
+.BR provides .
+They are not parsed, not checked, and do not appear in the package's metadata;
+build dependencies are what the masterdir contains.
+Any other function than
+.B build()
+and
+.B package()
+is skipped too.
+.SS Syntax
+A statement is
+.IB NAME = word\fR,
+.IB NAME =( words... )
+(an array may span lines and contain comments) or
+.IB NAME () " { ... }" .
+Quotes
+.RB ( ' ' " and " \(dq\(dq ),
+backslash escapes and
+.B #
+comments are understood.
+.BR $name ,
+.B ${name}
+and likewise
+.BR version " and " release
+are expanded in values; an unset variable is an error.
+Command substitution is not supported.
+Anything else \- a command, a pipe, a stray character \- is a syntax error that names the line,
+and nothing is run.
+The body of a function is matched by its braces (quotes and comments are respected)
+and handed to the sandbox as written.
 .SS Example
 .nf
 # Description: Compression library
 name=zlib
 version=1.3.2
 release=1
+arch=x86_64
 source=(https://example.org/zlib\-$version.tar.gz)
+depends=(glibc)
 
 build() {
         cd zlib\-$version
         ./configure \-\-prefix=/usr
         make
+}
+
+package() {
+        cd zlib\-$version
         make DESTDIR=$PKG install
 }
 .fi
+.SH SOURCES
+Each element of
+.B source
+is a file name or a URL; only the last component of the name is used.
+A URL (anything containing
+.BR :// )
+is downloaded next to the recipe with
+.B curl
+unless the file is already there.
+Files are taken from the recipe's directory.
+If a file
+.B .md5sum
+exists next to the recipe, every source needs a line in it and
+.BR md5sum (1)
+checks them; a mismatch stops the build.
+tar and zip archives
+.RB ( .tar ,
+.BR .tar.gz ,
+.BR .tgz ,
+.BR .tar.bz2 ,
+.BR .tbz2 ,
+.BR .tar.xz ,
+.BR .txz ,
+.BR .tar.zst ,
+.BR .tar.lz
+and
+.BR .zip )
+are unpacked with libarchive, and other files copied, into the source directory.
+An archive entry with an absolute path or a
+.B ..
+component is refused.
+.SH ISOLATION
+The build never touches the host.
+The
+.B bwrap
+command line is fixed in the program; there is no switch to turn the sandbox off, to build
+on the host, or to relax it.
+.IP \(bu 3
+The root file system is the
+.BR masterdir ,
+mounted read\-only
+.RB ( "\-\-ro\-bind " \fImasterdir\fR " /" ).
+It is a directory with a base system \- at least
+.B /bin/sh
+and a toolchain \- that you prepare (see
+.B make bootstrap\-env
+in the source tree for the empty layout); the build runs with exactly what is in it, and
+cannot change it.
+.B bwrap
+cannot create mount points on a read\-only root, so
+.BR dev ,
+.BR proc ,
+.B tmp
+and
+.B build
+are created in the masterdir if they are missing.
+.IP \(bu 3
+.BR /dev ,
+.B /proc
+and a tmpfs
+.B /tmp
+are mounted fresh.
+.IP \(bu 3
+The workspace is bound read\-write at
+.BR /build :
+.B /build/src
+holds the unpacked sources and is the working directory, and
+.B /build/pkg
+is the package root.
+They are separate directories, so the sources can never be mistaken for the package.
+.IP \(bu 3
+All namespaces are unshared
+.RB ( \-\-unshare\-all :
+no network), the sandbox dies with its parent and runs in a new session.
+.IP \(bu 3
+The environment is cleared
+.RB ( \-\-clearenv )
+and set explicitly:
+.BR PATH ,
+.BR HOME ,
+.BR LANG ,
+.BR SRC=/build/src ,
+.BR PKG=/build/pkg ,
+.BR DESTDIR=/build/pkg ,
+and
+.BR name ,
+.B version
+and
+.BR release .
+.IP \(bu 3
+The script is run by
+.BR "/bin/sh \-c" ,
+with
+.B set \-e
+so that a failing command ends the build: the two functions as written in the recipe, then
+.B build
+and, if defined,
+.BR package .
+.PP
+If
+.B bwrap
+cannot be started the build fails with an error that names bubblewrap; it is never run
+unprotected.
+Because the sandbox reads the masterdir, a build can only use what the masterdir contains.
+.SH WORKSPACE
+The workspace is a directory
+.BI /tmp/ hash
+on the host, where
+.I hash
+is 24 random lowercase letters and digits read from
+.BR /dev/urandom .
+It is created with
+.BR mkdir (2)
+(mode 0700), so a name that exists is never reused; the sources are put into its
+.B src
+directory and it holds the
+.B pkg
+directory that becomes the package.
+.PP
+It is owned by a C++ object whose destructor deletes it recursively \- read\-only
+directories made by the build included \- on every way out of the program: a finished
+build, a failed one, an error and an exception, and SIGINT, SIGTERM or SIGHUP (which are
+passed on to the sandbox first).
+The deletion is refused for anything but a path of the form
+.BI /tmp/ hash
+(16 to 32 lowercase letters and digits).
+Only SIGKILL or a crash of the machine can leave it behind.
+.SH PACKAGE
+After the build the contents of
+.B /build/pkg
+must not be empty.
+The package is written with libarchive: the metadata
+.B .META
+first, then the tree, sorted, with numeric owners and hard links preserved.
+.B .META
+holds
+.BR name ,
+.BR version ,
+.BR arch ,
+the description and the
+.BR depends .
+The extension and the compression are fixed when tatami is built
+.RB ( PKG_EXT ,
+by default
+.BR tar.pkg ;
+.BR PKG_COMPRESSION ,
+by default
+.BR zst ):
+the compression is the
+.B \-z
+option, then the one the extension ends in
+.RB ( gz , xz , zst , bz2 , lz4 , lzma ),
+then the build\-time default.
+With an empty
+.B PKG_EXT
+the extension is
+.BI tar. compression
+.RB ( tar
+for
+.BR none ).
+Neither can be set in a configuration file or the environment.
 .SH INSTALL SCRIPTS
 If a file named
 .B tatami.install
@@ -115,16 +354,27 @@ is not installed as a file.
 If a signing key exists, the build signs its results as part of the build.
 The key is the file named by the environment variable
 .B TATAMI_PRIVKEY
-(which must exist), otherwise
+(which must exist, otherwise the build stops with
+.BR "signing key \fIfile\fP (TATAMI_PRIVKEY) not found" ),
+or else
 .BR ~/.tatami/privkey ;
 it is made with
 .BR "tatami keygen" .
-Right after the package is written,
+With a key,
 .B tatami\-mkpkg
+needs the
+.B tatami
+binary and checks for it before building.
+Right after the package is written, by running that binary, it
 .IP \(bu 3
 refreshes the index
 .B repo.solv
-of the output directory, which records the SHA\-256 checksum of every package in it,
+of the output directory, which records the SHA\-256 checksum of every package in it
+(the directory is listed in a repository list in a throw\-away root below
+.BR $TMPDIR ,
+or
+.BR /tmp ,
+that is removed afterwards),
 .IP \(bu 3
 signs the package, writing
 .IB package .sig,
@@ -140,7 +390,9 @@ into
 .B /etc/tatami/keys/
 (see
 .BR tatami.conf (5)).
-Without a key, packages are built unsigned and the output directory is not indexed.
+Without a key the package is built unsigned, the output directory is not indexed and
+.B Not signing
+is printed.
 .SH OPTIONS
 .TP
 .BR \-f ", " \-\-file " " \fIrecipe\fP
@@ -150,9 +402,11 @@ Recipe to build (default
 .BR \-o ", " \-\-output " " \fIdir\fP
 Where to put the package (default: the current directory).
 .TP
-.BR \-c ", " \-\-config " " \fIfile\fP
-Use this configuration file instead of
-.BR /etc/tatami/tatami.conf .
+.BR \-m ", " \-\-masterdir " " \fIdir\fP
+The root file system of the sandbox
+.RB (default:
+.BR /var/lib/tatami/masterdir ).
+It must exist.
 .TP
 .BR \-z ", " \-\-compression " " \fIc\fP
 One of
@@ -163,22 +417,8 @@ One of
 .BR lz4 ,
 .B lzma
 or
-.BR none .
-The default is the one chosen when tatami was built
-.RB ( PKG_COMPRESSION ,
-.B zst
-unless changed), unless the package extension itself names one.
-It cannot be set in the configuration or the environment.
-Compression is done by tatami itself.
-.TP
-.BR \-k ", " \-\-keep\-work
-Do not remove the work directory.
-.TP
-.BR \-\-no\-bulkhead ", " \-\-no\-sandbox
-Build on the host, without the sandbox.
-.TP
-.B \-\-bulkhead
-Use the sandbox even if the configuration turns it off.
+.BR none ,
+for this build only.
 .TP
 .B \-\-no\-sign
 Do not sign, even if a key exists.
@@ -188,33 +428,28 @@ Print the version and exit.
 .TP
 .BR \-h ", " \-\-help
 Print a short help and exit.
-.SH SANDBOX
-By default
-.B build()
-runs in a
-.BR bwrap (1)
-sandbox, started through
-.BR "tatami bulkhead" :
-the system is read\-only, the network is unshared, and only a temporary
-build directory and the package root are writable.
-The sandbox is required then; if
-.B bwrap
-is missing the build fails instead of running unprotected.
-It can be turned off with
-.BR \-\-no\-bulkhead
-or
-.BR "BULKHEAD = no"
-in
-.BR tatami.conf (5).
+.PP
+The options of the former script
+.RB ( \-c ,
+.BR \-k ,
+.BR \-\-no\-bulkhead ,
+.BR \-\-no\-sandbox ,
+.BR \-\-bulkhead )
+are gone, and the configuration file is not read.
 .SH ENVIRONMENT
 .TP
 .B TATAMI
-The tatami binary used for packing, indexing, signing and the sandbox
-(default: found in
+The tatami binary used for signing and indexing (default: found in
 .BR PATH ).
 .TP
 .B TATAMI_PRIVKEY
 The signing key.
+.TP
+.B TMPDIR
+Where the throw\-away root for the index is made (default
+.BR /tmp ).
+.PP
+No other variable of the host reaches the build.
 .SH FILES
 .TP
 .B Tatamifile
@@ -227,10 +462,11 @@ Optional install script, bundled as
 .B .md5sum
 Optional checksums of the sources.
 .TP
-.B /etc/tatami/tatami.conf
-Configuration (only the key
-.B BULKHEAD
-is used; the package extension and compression are fixed when tatami is built).
+.B /var/lib/tatami/masterdir
+The default masterdir.
+.TP
+.B /tmp/\fIhash\fR
+The workspace of a build; deleted afterwards.
 .TP
 .B ~/.tatami/privkey
 The default signing key.
@@ -239,4 +475,5 @@ The default signing key.
 if the package was built, non\-zero otherwise.
 .SH SEE ALSO
 .BR tatami (8),
-.BR tatami.conf (5)
+.BR tatami.conf (5),
+.BR bwrap (1)

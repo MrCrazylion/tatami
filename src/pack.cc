@@ -106,7 +106,9 @@ void write_file_data(struct archive* a, const string& path)
 		throw runtime_error_with_errno("could not read " + path, e);
 }
 
-void pack(const string& comp, const string& meta_file, const string& src, const string& output)
+} // namespace
+
+void pack_archive(const string& comp, const string& meta_file, const string& src, const string& output)
 {
 	unique_ptr<struct archive, writer_closer> out(archive_write_new());
 	struct archive* a = out.get();
@@ -117,7 +119,6 @@ void pack(const string& comp, const string& meta_file, const string& src, const 
 		throw runtime_error("could not create " + output + ": " + archive_error_string(a));
 
 	unique_ptr<struct archive, disk_closer> disk(archive_read_disk_new());
-	archive_read_disk_set_standard_lookup(disk.get());
 
 	// .META first, so that tatami can read it without scanning the archive
 	{
@@ -189,42 +190,4 @@ void pack(const string& comp, const string& meta_file, const string& src, const 
 
 	if (archive_write_close(a) != ARCHIVE_OK)
 		throw runtime_error(string("could not finish the archive: ") + archive_error_string(a));
-}
-
-} // namespace
-
-int pack_main(int argc, char** argv)
-{
-	// argv: tatami pack [-z <compression>] <meta-file> <source-dir> <output>
-	string comp = "zst";
-	vector<string> args;
-
-	for (int i = 2; i < argc; i++) {
-		const string o = argv[i];
-		if (o == "-z" || o == "--compression") {
-			if (i + 1 >= argc) {
-				cerr << "tatami: option " << o << " requires an argument" << endl;
-				return 2;
-			}
-			comp = argv[++i];
-		} else {
-			args.push_back(o);
-		}
-	}
-
-	if (args.size() != 3) {
-		cerr << "usage: tatami pack [-z <compression>] <meta-file> <source-dir> <output>" << endl
-		     << "  compression: gz, zst (default), xz, bz2, lz4, lzma or none" << endl;
-		return 2;
-	}
-
-	try {
-		pack(comp, args[0], args[1], args[2]);
-	} catch (runtime_error& e) {
-		cerr << "tatami: pack: " << e.what() << endl;
-		unlink(args[2].c_str());
-		return 1;
-	}
-
-	return 0;
 }

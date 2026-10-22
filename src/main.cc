@@ -3,7 +3,6 @@
 //  commands and libsolv dependency resolution.
 //
 
-#include "bulkhead.h"
 #include "pack.h"
 #include "sign.h"
 #include "commands.h"
@@ -34,16 +33,10 @@ static void print_help()
 	}
 	cout << "  ";
 	cout.width(24);
-	cout << left << "bulkhead <dir> -- <cmd>" << "run a command in a bwrap sandbox (used by tatami-mkpkg)" << endl;
-	cout << "  ";
-	cout.width(24);
 	cout << left << "keygen [file]" << "make an Ed25519 key pair for signing packages (~/.tatami/privkey)" << endl;
 	cout << "  ";
 	cout.width(24);
 	cout << left << "sign <file> [key]" << "write <file>.sig, the Ed25519 signature of a file" << endl;
-	cout << "  ";
-	cout.width(24);
-	cout << left << "pack <meta> <dir> <out>" << "create a package archive (used by tatami-mkpkg), -z <compression>" << endl;
 	cout << endl
 	     << "options:" << endl
 	     << "  -y, --yes            do not ask for confirmation" << endl
@@ -67,12 +60,7 @@ static string need_value(int argc, char** argv, int i)
 
 int main(int argc, char** argv)
 {
-	// Not a package command: no configuration, no root, and the exit status
-	// of the sandboxed command is passed through unchanged.
-	if (argc >= 2 && string(argv[1]) == "bulkhead")
-		return bulkhead_main(argc, argv);
-	if (argc >= 2 && string(argv[1]) == "pack")
-		return pack_main(argc, argv);
+	// Not package commands: no configuration, no root
 	if (argc >= 2 && string(argv[1]) == "keygen")
 		return keygen_main(argc, argv);
 	if (argc >= 2 && string(argv[1]) == "sign")
